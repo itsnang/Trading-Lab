@@ -168,6 +168,7 @@ final class WorkspaceStore: ObservableObject {
     private var replayTimer: Timer?
     private var liveRNG = SeededRNG(seed: 0xB7AD321AB)
     private var isBootstrapping = true
+    private let isEphemeralPreview: Bool
 
     // MARK: - Study Suite Helpers
 
@@ -255,7 +256,16 @@ final class WorkspaceStore: ObservableObject {
         return liveTickSimulation && !isReplayMode && (marketStatus.isOpen || allowClosedMarketSim)
     }
 
-    init() {
+    init(ephemeralPreview: Bool = false) {
+        self.isEphemeralPreview = ephemeralPreview
+        if ephemeralPreview {
+            self.dataMode = .sample
+            self.instrument = .paxg
+            self.timeframe = .m5
+            self.isBootstrapping = false
+            reloadMarket()
+            return
+        }
         self.drawingsByInstrument = PersistenceStore.loadDrawings()
         self.journalEntries = PersistenceStore.loadJournal()
         self.alerts = PersistenceStore.loadAlerts()
@@ -329,7 +339,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func saveWorkspacePrefs() {
-        guard !isBootstrapping else { return }
+        guard !isBootstrapping, !isEphemeralPreview else { return }
         PersistenceStore.savePrefs(WorkspacePrefs(
             isDarkTheme: isDarkTheme,
             activeStudies: activeStudies,
