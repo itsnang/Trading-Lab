@@ -29,12 +29,6 @@ final class WorkspaceStore: ObservableObject {
         didSet { saveWorkspacePrefs() }
     }
     @Published var activeSection: WorkspaceSection = .terminal
-    @Published var dataMode: DataSourceMode = .live {
-        didSet {
-            saveWorkspacePrefs()
-            if !isBootstrapping { reloadMarket() }
-        }
-    }
     @Published var instrument: Instrument = .paxg {
         didSet {
             saveWorkspacePrefs()
@@ -58,8 +52,6 @@ final class WorkspaceStore: ObservableObject {
     @Published var replayIndex: Int = 180
     @Published var isReplayPlaying: Bool = false
     @Published var replaySpeed: Double = 2.0
-    @Published var liveTickSimulation: Bool = true
-    @Published var allowClosedMarketSim: Bool = false
 
     // Live Order Flow Tape
     @Published private(set) var orderFlowTrades: [OrderFlowTrade] = []
@@ -173,9 +165,7 @@ final class WorkspaceStore: ObservableObject {
     private var reconnectAttempt: Int = 0
     private var wsRotationTimer: Timer?
     private var pollTimer: Timer?
-    private var tickTimer: Timer?
     private var replayTimer: Timer?
-    private var liveRNG = SeededRNG(seed: 0xB7AD321AB)
     private var isBootstrapping = true
     private let isEphemeralPreview: Bool
 
@@ -257,16 +247,14 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var isReceivingTicks: Bool {
-        if dataMode == .live {
-            if case .streaming = liveFeedState { return !isReplayMode }
-            if case .polling = liveFeedState { return !isReplayMode && marketStatus.isOpen }
-            return false
-        }
-        return liveTickSimulation && !isReplayMode && (marketStatus.isOpen || allowClosedMarketSim)
+        if case .streaming = liveFeedState { return !isReplayMode }
+        if case .polling = liveFeedState { return !isReplayMode && marketStatus.isOpen }
+        return false
     }
 
     init(
         ephemeralPreview: Bool = false,
+        initialCandles: [Candle]? = nil,
         marketService: MarketDataAdapter = LiveMarketService(),
         persistence: PersistenceAdapter = DiskPersistenceAdapter(),
         startTimers: Bool = true
@@ -275,11 +263,16 @@ final class WorkspaceStore: ObservableObject {
         self.persistence = persistence
         self.isEphemeralPreview = ephemeralPreview
         if ephemeralPreview {
-            self.dataMode = .sample
             self.instrument = .paxg
             self.timeframe = .m5
             self.isBootstrapping = false
-            reloadMarket()
+            if let candles = initialCandles {
+                self.allCandles = candles
+                self.replayIndex = max(60, candles.count - 55)
+                self.recomputeIndicators()
+            } else {
+                reloadMarket()
+            }
             return
         }
         self.drawingsByInstrument = persistence.loadDrawings()
@@ -290,7 +283,6 @@ final class WorkspaceStore: ObservableObject {
             self.activeStudies = prefs.activeStudies
             self.indicatorConfig = prefs.indicatorConfig
             self.showBacktestSignalsOnChart = prefs.showStrategyOverlay
-            if let m = DataSourceMode(rawValue: prefs.dataModeRaw) { self.dataMode = m }
             if let inst = Instrument(rawValue: prefs.instrumentRaw) { self.instrument = inst }
             if let tf = Timeframe(rawValue: prefs.timeframeRaw) { self.timeframe = tf }
             self.visibleCandleCount = max(14.0, min(260.0, prefs.visibleCandleCount))
@@ -315,7 +307,6 @@ final class WorkspaceStore: ObservableObject {
                 }
             }
             reloadMarket()
-            startSampleTickTimer()
             startCountdownTimer()
         }
     }
@@ -324,7 +315,6 @@ final class WorkspaceStore: ObservableObject {
         loadTask?.cancel()
         liveService.disconnectStream()
         pollTimer?.invalidate()
-        tickTimer?.invalidate()
         replayTimer?.invalidate()
         countdownTimer?.invalidate()
     }
@@ -364,7 +354,6 @@ final class WorkspaceStore: ObservableObject {
             activeStudies: activeStudies,
             indicatorConfig: indicatorConfig,
             showStrategyOverlay: showBacktestSignalsOnChart,
-            dataModeRaw: dataMode.rawValue,
             instrumentRaw: instrument.rawValue,
             timeframeRaw: timeframe.rawValue,
             visibleCandleCount: visibleCandleCount,
@@ -439,18 +428,6 @@ final class WorkspaceStore: ObservableObject {
         rightOffsetBars = 6.0
         isAutoPriceScale = true
 
-        if dataMode == .sample {
-            liveFeedState = .idle
-            allCandles = SampleMarketEngine.generateCandles(
-                instrument: instrument,
-                timeframe: timeframe,
-                count: 500
-            )
-            replayIndex = max(60, allCandles.count - 55)
-            recomputeIndicators()
-            return
-        }
-
         let selectedInstrument = instrument
         let selectedTimeframe = timeframe
         liveFeedState = .connecting(selectedInstrument.binanceSymbol != nil ? "Binance" : "Yahoo Finance")
@@ -465,7 +442,6 @@ final class WorkspaceStore: ObservableObject {
                     endTime: nil
                 )
                 guard !Task.isCancelled,
-                      self.dataMode == .live,
                       self.instrument == selectedInstrument,
                       self.timeframe == selectedTimeframe else { return }
 
@@ -475,19 +451,16 @@ final class WorkspaceStore: ObservableObject {
 
                 if let binSym = selectedInstrument.binanceSymbol, res.provider == "Binance" {
                     self.startLiveBinanceStream(symbol: binSym, interval: selectedTimeframe.binanceInterval)
+                } else if selectedInstrument.swissquotePath != nil {
+                    self.liveFeedState = .streaming("Swissquote Spot")
+                    self.startSwissquoteSpotPolling(instrument: selectedInstrument, timeframe: selectedTimeframe)
                 } else {
                     self.liveFeedState = .polling("Yahoo Live")
                     self.startYahooPolling(instrument: selectedInstrument, timeframe: selectedTimeframe)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                self.liveFeedState = .error("Feed unavailable (sample fallback)")
-                self.allCandles = SampleMarketEngine.generateCandles(
-                    instrument: selectedInstrument,
-                    timeframe: selectedTimeframe,
-                    count: 500
-                )
-                self.recomputeIndicators()
+                self.liveFeedState = .error("Feed unavailable")
             }
         }
     }
@@ -495,8 +468,7 @@ final class WorkspaceStore: ObservableObject {
     /// Paginates older historical candles backward using endTime = earliestOpenMs - 1ms
     /// and prepends deduplicated bars while keeping visible scroll and drawings anchored.
     func backfillOlderHistory() async {
-        guard dataMode == .live,
-              !isBackfillingHistory,
+        guard !isBackfillingHistory,
               allCandles.count < 4000,
               let earliest = allCandles.first else { return }
 
@@ -514,8 +486,7 @@ final class WorkspaceStore: ObservableObject {
                 limit: 500,
                 endTime: endTime
             )
-            guard dataMode == .live,
-                  instrument == targetInstrument,
+            guard instrument == targetInstrument,
                   timeframe == targetTimeframe else { return }
 
             let olderUnique = res.candles
@@ -551,7 +522,7 @@ final class WorkspaceStore: ObservableObject {
         // Proactive 23h45m rotation before Binance's hard 24h WebSocket cutoff
         wsRotationTimer = Timer.scheduledTimer(withTimeInterval: 85_500, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.dataMode == .live, let sym = self.instrument.binanceSymbol else { return }
+                guard let self, let sym = self.instrument.binanceSymbol else { return }
                 self.startLiveBinanceStream(symbol: sym, interval: self.timeframe.binanceInterval)
             }
         }
@@ -574,7 +545,7 @@ final class WorkspaceStore: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.liveFeedState = status
-                    if case .error = status, self.dataMode == .live, self.instrument.binanceSymbol == symbol {
+                    if case .error = status, self.instrument.binanceSymbol == symbol {
                         self.scheduleBinanceReconnect(symbol: symbol, interval: interval)
                     }
                 }
@@ -591,7 +562,7 @@ final class WorkspaceStore: ObservableObject {
 
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self, self.dataMode == .live, self.instrument.binanceSymbol == symbol else { return }
+                guard let self, self.instrument.binanceSymbol == symbol else { return }
                 if let gap = try? await self.liveService.fetchHistoricalCandles(
                     instrument: self.instrument,
                     timeframe: self.timeframe,
@@ -607,11 +578,71 @@ final class WorkspaceStore: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    private func startSwissquoteSpotPolling(instrument: Instrument, timeframe: Timeframe) {
+        pollTimer?.invalidate()
+        // Immediate first tick so the live price snaps to real-time spot without waiting 1s
+        Task { @MainActor [weak self] in
+            guard let self, self.instrument == instrument, self.timeframe == timeframe else { return }
+            if let quote = try? await self.liveService.fetchLiveSpotQuote(instrument: instrument) {
+                self.applyLiveSpotTick(price: quote.price, timestamp: quote.timestamp)
+            }
+        }
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isReplayMode,
+                      self.instrument == instrument, self.timeframe == timeframe else { return }
+                self.marketStatus = instrument.marketStatus()
+                guard self.marketStatus.isOpen else { return }
+                if let quote = try? await self.liveService.fetchLiveSpotQuote(instrument: instrument) {
+                    self.applyLiveSpotTick(price: quote.price, timestamp: quote.timestamp)
+                }
+            }
+        }
+    }
+
+    func applyLiveSpotTick(price: Double, timestamp: Date) {
+        guard price.isFinite, price > 0, !allCandles.isEmpty else { return }
+        let bucketSec = timeframe.seconds
+        let incomingBucket = floor(timestamp.timeIntervalSince1970 / bucketSec) * bucketSec
+        let alignedDate = Date(timeIntervalSince1970: incomingBucket)
+
+        if let last = allCandles.last {
+            let lastBucket = floor(last.timestamp.timeIntervalSince1970 / bucketSec) * bucketSec
+            if abs(lastBucket - incomingBucket) < 0.5 {
+                allCandles[allCandles.count - 1] = Candle(
+                    id: last.id,
+                    timestamp: alignedDate,
+                    open: last.open,
+                    high: max(last.high, price),
+                    low: min(last.low, price),
+                    close: price,
+                    volume: last.volume + 1.0
+                )
+            } else if incomingBucket > lastBucket {
+                allCandles.append(Candle(
+                    id: last.id + 1,
+                    timestamp: alignedDate,
+                    open: price,
+                    high: price,
+                    low: price,
+                    close: price,
+                    volume: 1.0
+                ))
+            }
+        }
+
+        if let latest = allCandles.last {
+            recomputeIndicators()
+            evaluateAlerts(currentPrice: price)
+            evaluatePaperDeskExecution(barLow: latest.low, barHigh: latest.high, currentPrice: price)
+        }
+    }
+
     private func startYahooPolling(instrument: Instrument, timeframe: Timeframe) {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.dataMode == .live, !self.isReplayMode,
+                guard let self, !self.isReplayMode,
                       self.instrument == instrument, self.timeframe == timeframe else { return }
                 self.marketStatus = instrument.marketStatus()
                 guard self.marketStatus.isOpen else { return }
@@ -622,35 +653,58 @@ final class WorkspaceStore: ObservableObject {
                     self.mergeTailCandles(tail)
                     self.recomputeIndicators()
                     self.evaluateAlerts(currentPrice: self.lastPrice)
+                    if let latest = self.allCandles.last {
+                        self.evaluatePaperDeskExecution(barLow: latest.low, barHigh: latest.high, currentPrice: latest.close)
+                    }
                 }
             }
         }
     }
 
-    private func mergeTailCandles(_ incoming: [Candle]) {
+    func mergeTailCandles(_ incoming: [Candle]) {
         guard !incoming.isEmpty else { return }
+        let bucketSec = timeframe.seconds
+        func bucketEpoch(_ date: Date) -> TimeInterval {
+            floor(date.timeIntervalSince1970 / bucketSec) * bucketSec
+        }
+
         if allCandles.isEmpty {
-            allCandles = incoming
+            allCandles = incoming.enumerated().map { idx, c in
+                Candle(
+                    id: idx,
+                    timestamp: Date(timeIntervalSince1970: bucketEpoch(c.timestamp)),
+                    open: c.open,
+                    high: max(c.open, c.high, c.low, c.close),
+                    low: min(c.open, c.high, c.low, c.close),
+                    close: c.close,
+                    volume: c.volume
+                )
+            }
             return
         }
+
         for bar in incoming {
-            if let idx = allCandles.lastIndex(where: { abs($0.timestamp.timeIntervalSince(bar.timestamp)) < 1.0 }) {
+            let incomingBucket = bucketEpoch(bar.timestamp)
+            let alignedDate = Date(timeIntervalSince1970: incomingBucket)
+
+            if let idx = allCandles.lastIndex(where: { abs(bucketEpoch($0.timestamp) - incomingBucket) < 0.5 }) {
+                let existing = allCandles[idx]
                 allCandles[idx] = Candle(
-                    id: allCandles[idx].id,
-                    timestamp: bar.timestamp,
-                    open: bar.open,
-                    high: bar.high,
-                    low: bar.low,
+                    id: existing.id,
+                    timestamp: alignedDate,
+                    open: existing.open,
+                    high: max(existing.high, bar.high),
+                    low: min(existing.low, bar.low),
                     close: bar.close,
-                    volume: bar.volume
+                    volume: max(existing.volume, bar.volume)
                 )
-            } else if let last = allCandles.last, bar.timestamp > last.timestamp {
+            } else if let last = allCandles.last, incomingBucket > bucketEpoch(last.timestamp) {
                 allCandles.append(Candle(
                     id: last.id + 1,
-                    timestamp: bar.timestamp,
+                    timestamp: alignedDate,
                     open: bar.open,
-                    high: bar.high,
-                    low: bar.low,
+                    high: max(bar.open, bar.high, bar.low, bar.close),
+                    low: min(bar.open, bar.high, bar.low, bar.close),
                     close: bar.close,
                     volume: bar.volume
                 ))
@@ -659,7 +713,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func applyLiveKline(timestamp: Date, open: Double, high: Double, low: Double, close: Double, volume: Double) {
-        guard dataMode == .live, !allCandles.isEmpty else { return }
+        guard !allCandles.isEmpty else { return }
         if let last = allCandles.last, abs(last.timestamp.timeIntervalSince(timestamp)) < 1.0 {
             allCandles[allCandles.count - 1] = Candle(
                 id: last.id,
@@ -743,7 +797,7 @@ final class WorkspaceStore: ObservableObject {
 
         // Trigger background backfill when panning within 35 bars of the earliest loaded candle
         let leftVisibleIdx = Double(visibleSeries.count - 1) + rightOffsetBars - visibleCandleCount
-        if leftVisibleIdx < 35.0, dataMode == .live, !isBackfillingHistory {
+        if leftVisibleIdx < 35.0, !isBackfillingHistory {
             backfillTask = Task { [weak self] in
                 await self?.backfillOlderHistory()
             }
@@ -932,47 +986,6 @@ final class WorkspaceStore: ObservableObject {
         replayTimer = nil
     }
 
-    // MARK: - Sample Mode Tick Simulation
-
-    private func startSampleTickTimer() {
-        tickTimer?.invalidate()
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 0.65, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.applySampleTick()
-            }
-        }
-    }
-
-    private func applySampleTick() {
-        let status = instrument.marketStatus()
-        if status != marketStatus { marketStatus = status }
-
-        guard dataMode == .sample, isReceivingTicks, !allCandles.isEmpty else { return }
-        var last = allCandles[allCandles.count - 1]
-        let step = instrument.volatility * timeframe.volatilityScale * 0.12
-        let delta = liveRNG.nextGaussian() * step
-        let nextClose = max(last.close + delta, instrument.pipSize * 10)
-        last.close = nextClose
-        last.high = max(last.high, nextClose)
-        last.low = min(last.low, nextClose)
-        let volAdd = 18.0 + liveRNG.nextUnit() * 45.0
-        last.volume += volAdd
-        allCandles[allCandles.count - 1] = last
-
-        let simTrade = OrderFlowTrade(
-            id: UUID(),
-            timestamp: Date(),
-            price: nextClose,
-            quantity: volAdd / 10.0,
-            usdValue: volAdd * 25.0,
-            isBuyerAggressor: delta >= 0
-        )
-        ingestOrderFlowTrade(simTrade)
-        recomputeIndicators()
-        evaluateAlerts(currentPrice: nextClose)
-        evaluatePaperDeskExecution(barLow: last.low, barHigh: last.high, currentPrice: nextClose)
-    }
-
     // MARK: - Paper Desk Execution, Pending Orders & Auto-Journal Logging
 
     func openSampleOrder(isBuy: Bool) {
@@ -1038,7 +1051,7 @@ final class WorkspaceStore: ObservableObject {
             pos: pos,
             closedLots: closeLots,
             exitPrice: exitPrice,
-            note: "Partial close (\(Int(clamped * 100))%) from \(dataMode.rawValue) Paper Desk"
+            note: "Partial close (\(Int(clamped * 100))%) from Paper Desk"
         )
     }
 
@@ -1073,14 +1086,14 @@ final class WorkspaceStore: ObservableObject {
                 let slHit = pos.isBuy ? (barLow <= sl) : (barHigh >= sl)
                 if slHit {
                     let isBE = abs(sl - pos.entryPrice) <= pos.instrument.pipSize * 0.5
-                    toClose.append((pos.id, sl, isBE ? "Auto Breakeven Stop Fill (\(dataMode.rawValue))" : "Auto SL Fill (\(dataMode.rawValue))"))
+                    toClose.append((pos.id, sl, isBE ? "Auto Breakeven Stop Fill" : "Auto SL Fill"))
                     continue
                 }
             }
             if let tp = pos.takeProfit {
                 let tpHit = pos.isBuy ? (barHigh >= tp) : (barLow <= tp)
                 if tpHit {
-                    toClose.append((pos.id, tp, "Auto TP Fill (\(dataMode.rawValue))"))
+                    toClose.append((pos.id, tp, "Auto TP Fill"))
                 }
             }
         }
@@ -1098,7 +1111,7 @@ final class WorkspaceStore: ObservableObject {
             pos: pos,
             closedLots: pos.lots,
             exitPrice: exitPrice,
-            note: reasonNote ?? "Closed from \(dataMode.rawValue) terminal"
+            note: reasonNote ?? "Closed from Paper Desk"
         )
         samplePositions.remove(at: idx)
     }

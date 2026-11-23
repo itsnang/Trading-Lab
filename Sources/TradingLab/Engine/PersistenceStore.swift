@@ -23,7 +23,6 @@ struct WorkspacePrefs: Codable {
     var showStrategyOverlay: Bool = false
 
     // Chart & Session Workspace State
-    var dataModeRaw: String = DataSourceMode.live.rawValue
     var instrumentRaw: String = Instrument.paxg.rawValue
     var timeframeRaw: String = Timeframe.m5.rawValue
     var visibleCandleCount: Double = 95.0
@@ -49,7 +48,6 @@ struct WorkspacePrefs: Codable {
         activeStudies: [ActiveStudy],
         indicatorConfig: IndicatorConfig,
         showStrategyOverlay: Bool,
-        dataModeRaw: String,
         instrumentRaw: String,
         timeframeRaw: String,
         visibleCandleCount: Double,
@@ -70,7 +68,6 @@ struct WorkspacePrefs: Codable {
         self.activeStudies = activeStudies
         self.indicatorConfig = indicatorConfig
         self.showStrategyOverlay = showStrategyOverlay
-        self.dataModeRaw = dataModeRaw
         self.instrumentRaw = instrumentRaw
         self.timeframeRaw = timeframeRaw
         self.visibleCandleCount = visibleCandleCount
@@ -96,7 +93,6 @@ struct WorkspacePrefs: Codable {
         activeStudies = try c.decodeIfPresent([ActiveStudy].self, forKey: .activeStudies) ?? d.activeStudies
         indicatorConfig = try c.decodeIfPresent(IndicatorConfig.self, forKey: .indicatorConfig) ?? d.indicatorConfig
         showStrategyOverlay = try c.decodeIfPresent(Bool.self, forKey: .showStrategyOverlay) ?? d.showStrategyOverlay
-        dataModeRaw = try c.decodeIfPresent(String.self, forKey: .dataModeRaw) ?? d.dataModeRaw
         instrumentRaw = try c.decodeIfPresent(String.self, forKey: .instrumentRaw) ?? d.instrumentRaw
         timeframeRaw = try c.decodeIfPresent(String.self, forKey: .timeframeRaw) ?? d.timeframeRaw
         visibleCandleCount = try c.decodeIfPresent(Double.self, forKey: .visibleCandleCount) ?? d.visibleCandleCount

@@ -58,8 +58,9 @@ final class TradingLabAppDelegate: NSObject, NSApplicationDelegate {
             win.orderOut(nil)
         }
 
-        // Build an isolated preview store (uses sample mode so screenshots are deterministic & never touch user prefs)
+        // Build an isolated preview store (never touches user prefs)
         let previewStore = WorkspaceStore(ephemeralPreview: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
 
         // 1. Light Terminal (Market Structure 2.0 + Order Flow + Momentum Oscillator)
         previewStore.isDarkTheme = false

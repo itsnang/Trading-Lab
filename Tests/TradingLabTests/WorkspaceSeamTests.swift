@@ -17,8 +17,51 @@ final class InMemoryPersistenceAdapter: PersistenceAdapter {
     func saveAlerts(_ alerts: [PriceAlert]) { self.alerts = alerts }
 }
 
+private func makeTestCandles(instrument: Instrument, timeframe: Timeframe, count: Int) -> [Candle] {
+    var state: UInt64 = 0x5A17_C0DE_1234_5678
+    func nextUnit() -> Double {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        z = z ^ (z >> 31)
+        return Double(z >> 11) / Double(1 << 53)
+    }
+
+    let stepSec = timeframe.seconds
+    let startEpoch = 1_700_000_000.0
+    let vol = instrument.volatility * timeframe.volatilityScale
+    var price = instrument.basePrice
+    var drift = vol * 0.18
+    var candles: [Candle] = []
+    candles.reserveCapacity(count)
+
+    for i in 0..<count {
+        if i % 24 == 0 {
+            drift = (i / 24) % 2 == 0 ? vol * 0.22 : -vol * 0.18
+        }
+        let open = price
+        let delta = drift + (nextUnit() - 0.5) * vol * 1.4
+        let close = max(open + delta, instrument.pipSize * 10)
+        let high = max(open, close) + nextUnit() * vol * 0.5
+        let low = max(min(open, close) - nextUnit() * vol * 0.5, instrument.pipSize * 5)
+        candles.append(Candle(
+            id: i,
+            timestamp: Date(timeIntervalSince1970: startEpoch + Double(i) * stepSec),
+            open: open,
+            high: high,
+            low: low,
+            close: close,
+            volume: 800.0 + nextUnit() * 1200.0
+        ))
+        price = close
+    }
+    return candles
+}
+
 final class FakeMarketDataAdapter: MarketDataAdapter {
     var historicalBatches: [[Candle]] = []
+    var shouldFailHistorical: Bool = false
     var tailCandles: [Candle] = []
     var lastRequestedEndTime: Date?
     var lastRequestedLimit: Int?
@@ -34,8 +77,11 @@ final class FakeMarketDataAdapter: MarketDataAdapter {
     ) async throws -> (candles: [Candle], provider: String) {
         lastRequestedLimit = limit
         lastRequestedEndTime = endTime
+        if shouldFailHistorical {
+            throw URLError(.notConnectedToInternet)
+        }
         let batch = historicalBatches.isEmpty
-            ? SampleMarketEngine.generateCandles(instrument: instrument, timeframe: timeframe, count: min(limit, 120))
+            ? makeTestCandles(instrument: instrument, timeframe: timeframe, count: min(limit, 120))
             : historicalBatches.removeFirst()
         return (batch, instrument.binanceSymbol != nil ? "Binance" : "Yahoo Finance")
     }
@@ -246,7 +292,7 @@ final class WorkspaceSeamTests: XCTestCase {
     }
 
     func testUnifiedFourStageStrategyEngineEvaluates4StageRulesWithPartialTPBreakevenAndZeroLookahead() {
-        let candles = SampleMarketEngine.generateCandles(instrument: .paxg, timeframe: .m5, count: 260)
+        let candles = makeTestCandles(instrument: .paxg, timeframe: .m5, count: 260)
         let indicators = IndicatorEngine.computeAll(candles: candles, config: IndicatorConfig())
 
         var cfg = FourStageStrategyConfig()
@@ -347,5 +393,74 @@ final class WorkspaceSeamTests: XCTestCase {
         XCTAssertGreaterThan(store.sampleBalance, balanceAfterPartial)
         XCTAssertEqual(store.journalEntries.count, 2)
         XCTAssertTrue(store.journalEntries[0].notes.contains("Auto TP"))
+    }
+
+    func testFeedFailureDoesNotFallbackToSyntheticCandles() async {
+        let fakeMarket = FakeMarketDataAdapter()
+        fakeMarket.shouldFailHistorical = true
+        let memory = InMemoryPersistenceAdapter()
+        let store = WorkspaceStore(marketService: fakeMarket, persistence: memory, startTimers: false)
+
+        store.reloadMarket()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        if case .error = store.liveFeedState {
+            // Expected error state
+        } else {
+            XCTFail("Expected .error liveFeedState when feed fails, got \(store.liveFeedState)")
+        }
+        XCTAssertTrue(store.allCandles.isEmpty, "Should not inject synthetic sample candles on feed failure")
+    }
+
+    func testMergeTailCandlesMergesUnalignedYahooLiveQuotesIntoActiveTimeframeBucket() {
+        let memory = InMemoryPersistenceAdapter()
+        let store = WorkspaceStore(marketService: FakeMarketDataAdapter(), persistence: memory, startTimers: false)
+        store.instrument = .xauusd
+        store.timeframe = .m15
+
+        // Seed 09:00 M15 candle (aligned to 900s)
+        let t0900 = 1_795_424_400.0 // exact multiple of 900
+        store.mergeTailCandles([
+            Candle(id: 0, timestamp: Date(timeIntervalSince1970: t0900), open: 3614.1, high: 3614.3, low: 3611.0, close: 3613.3, volume: 1144)
+        ])
+        XCTAssertEqual(store.allCandles.count, 1)
+
+        // Simulate 3 consecutive 10s Yahoo polls returning unaligned flat live quotes inside the same 09:00 M15 bar
+        store.mergeTailCandles([
+            Candle(id: 0, timestamp: Date(timeIntervalSince1970: t0900 + 603), open: 3612.4, high: 3612.4, low: 3612.4, close: 3612.4, volume: 0)
+        ])
+        store.mergeTailCandles([
+            Candle(id: 0, timestamp: Date(timeIntervalSince1970: t0900 + 613), open: 3615.0, high: 3615.0, low: 3615.0, close: 3615.0, volume: 0)
+        ])
+        store.mergeTailCandles([
+            Candle(id: 0, timestamp: Date(timeIntervalSince1970: t0900 + 623), open: 3610.2, high: 3610.2, low: 3610.2, close: 3610.2, volume: 0)
+        ])
+
+        // Must STILL be 1 candle (no fake flat bars appended), with merged OHLC and preserved volume
+        XCTAssertEqual(store.allCandles.count, 1)
+        let merged = store.allCandles[0]
+        XCTAssertEqual(merged.timestamp.timeIntervalSince1970, t0900, accuracy: 0.1)
+        XCTAssertEqual(merged.open, 3614.1, accuracy: 1e-6)
+        XCTAssertEqual(merged.high, 3615.0, accuracy: 1e-6)
+        XCTAssertEqual(merged.low, 3610.2, accuracy: 1e-6)
+        XCTAssertEqual(merged.close, 3610.2, accuracy: 1e-6)
+        XCTAssertEqual(merged.volume, 1144, accuracy: 1e-6)
+
+        // Next M15 bucket (09:15) should append cleanly as candle #2
+        store.mergeTailCandles([
+            Candle(id: 1, timestamp: Date(timeIntervalSince1970: t0900 + 900), open: 3610.5, high: 3612.0, low: 3609.8, close: 3611.6, volume: 320)
+        ])
+        XCTAssertEqual(store.allCandles.count, 2)
+
+        // Real-time Swissquote spot ticks inside 09:15 update high/low/close in place; 09:30 rolls over cleanly
+        store.applyLiveSpotTick(price: 3618.4, timestamp: Date(timeIntervalSince1970: t0900 + 912))
+        store.applyLiveSpotTick(price: 3617.9, timestamp: Date(timeIntervalSince1970: t0900 + 913))
+        XCTAssertEqual(store.allCandles.count, 2)
+        XCTAssertEqual(store.allCandles[1].high, 3618.4, accuracy: 1e-6)
+        XCTAssertEqual(store.allCandles[1].close, 3617.9, accuracy: 1e-6)
+
+        store.applyLiveSpotTick(price: 3618.1, timestamp: Date(timeIntervalSince1970: t0900 + 1801))
+        XCTAssertEqual(store.allCandles.count, 3)
+        XCTAssertEqual(store.allCandles[2].timestamp.timeIntervalSince1970, t0900 + 1800, accuracy: 0.1)
     }
 }

@@ -16,13 +16,6 @@ struct Candle: Identifiable, Hashable {
     var hlc3: Double { (high + low + close) / 3.0 }
 }
 
-enum DataSourceMode: String, CaseIterable, Identifiable {
-    case live = "LIVE"
-    case sample = "SAMPLE"
-
-    var id: String { rawValue }
-}
-
 enum LiveFeedState: Equatable {
     case idle
     case connecting(String)
@@ -74,6 +67,15 @@ enum Instrument: String, CaseIterable, Identifiable, Codable {
         case .ethusd: return "ETH-USD"
         case .us30: return "YM=F"
         case .nas100: return "NQ=F"
+        }
+    }
+
+    /// Swissquote public real-time BBO spot feed path (zero API key, ~0.2s latency)
+    var swissquotePath: String? {
+        switch self {
+        case .xauusd: return "XAU/USD"
+        case .eurusd: return "EUR/USD"
+        default: return nil
         }
     }
 
@@ -317,101 +319,6 @@ struct OrderFlowTrade: Identifiable, Hashable {
     let quantity: Double
     let usdValue: Double
     let isBuyerAggressor: Bool
-}
-
-struct SeededRNG {
-    private var state: UInt64
-
-    init(seed: UInt64) {
-        self.state = seed == 0 ? 0x9E3779B97F4A7C15 : seed
-    }
-
-    mutating func nextUInt64() -> UInt64 {
-        state &+= 0x9E3779B97F4A7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
-        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
-        return z ^ (z >> 31)
-    }
-
-    mutating func nextUnit() -> Double {
-        Double(nextUInt64() >> 11) / Double(1 << 53)
-    }
-
-    mutating func nextGaussian() -> Double {
-        let u1 = max(nextUnit(), 1e-9)
-        let u2 = nextUnit()
-        return sqrt(-2.0 * log(u1)) * cos(2.0 * .pi * u2)
-    }
-}
-
-enum SampleMarketEngine {
-    static func generateCandles(
-        instrument: Instrument,
-        timeframe: Timeframe,
-        count: Int = 260
-    ) -> [Candle] {
-        var hash: UInt64 = 1469598103934665603
-        for b in (instrument.rawValue + ":" + timeframe.rawValue).utf8 {
-            hash ^= UInt64(b)
-            hash &*= 1099511628211
-        }
-        var rng = SeededRNG(seed: hash)
-
-        let anchorDate = instrument.lastTradingTimestamp(at: Date())
-        let alignedNow = floor(anchorDate.timeIntervalSince1970 / timeframe.seconds) * timeframe.seconds
-        let startEpoch = alignedNow - Double(count - 1) * timeframe.seconds
-
-        let vol = instrument.volatility * timeframe.volatilityScale
-        var price = instrument.basePrice * (0.985 + 0.03 * rng.nextUnit())
-        var regimeDrift = 0.0
-        var regimeCountdown = 0
-        var candles: [Candle] = []
-        candles.reserveCapacity(count)
-
-        for i in 0..<count {
-            if regimeCountdown <= 0 {
-                let r = rng.nextUnit()
-                if r < 0.34 {
-                    regimeDrift = vol * (0.14 + 0.22 * rng.nextUnit())
-                } else if r < 0.68 {
-                    regimeDrift = -vol * (0.14 + 0.22 * rng.nextUnit())
-                } else {
-                    regimeDrift = 0.0
-                }
-                regimeCountdown = 16 + Int(rng.nextUnit() * 28)
-            }
-            regimeCountdown -= 1
-
-            let open = price
-            let impulse = (rng.nextUnit() < 0.08) ? 2.4 : 1.0
-            let delta = regimeDrift + rng.nextGaussian() * vol * 0.72 * impulse
-            let close = max(open + delta, instrument.pipSize * 10)
-
-            let upperWick = abs(rng.nextGaussian()) * vol * 0.42 * impulse
-            let lowerWick = abs(rng.nextGaussian()) * vol * 0.42 * impulse
-            let high = max(open, close) + upperWick
-            let low = max(min(open, close) - lowerWick, instrument.pipSize * 5)
-
-            let bodySize = abs(close - open)
-            let baseVol = 450.0 + rng.nextUnit() * 1400.0
-            let volume = baseVol * (1.0 + (bodySize / max(vol, 1e-6)) * 1.45)
-
-            let ts = Date(timeIntervalSince1970: startEpoch + Double(i) * timeframe.seconds)
-            candles.append(Candle(
-                id: i,
-                timestamp: ts,
-                open: open,
-                high: high,
-                low: low,
-                close: close,
-                volume: volume
-            ))
-            price = close
-        }
-
-        return candles
-    }
 }
 
 enum PendingOrderKind: String, CaseIterable, Identifiable, Codable {

@@ -195,30 +195,6 @@ struct WindowChromeBar: View {
                 }
                 .buttonStyle(.plain)
                 .help(store.isDarkTheme ? "Switch to Clean Light Theme" : "Switch to Dark Theme")
-
-                // LIVE | SAMPLE Switcher
-                HStack(spacing: 2) {
-                    ForEach(DataSourceMode.allCases) { mode in
-                        let selected = store.dataMode == mode
-                        Button {
-                            store.dataMode = mode
-                        } label: {
-                            Text(mode.rawValue)
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundStyle(selected ? .white : t.secondaryText)
-                                .padding(.horizontal, 8.5)
-                                .padding(.vertical, 4)
-                                .background(
-                                    selected ? (mode == .live ? t.bull : t.amber) : Color.clear,
-                                    in: Capsule()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(2.5)
-                .background(t.softSurface, in: Capsule())
-                .overlay(Capsule().stroke(t.border, lineWidth: 0.8))
                 .padding(.trailing, 14)
             }
         }
@@ -245,58 +221,33 @@ struct WindowChromeBar: View {
 
     @ViewBuilder
     private func feedStatusPill(theme t: AppTheme) -> some View {
-        if store.dataMode == .live {
-            Button { store.reloadMarket() } label: {
-                HStack(spacing: 5) {
-                    switch store.liveFeedState {
-                    case .streaming(let src):
-                        Circle().fill(t.bull).frame(width: 7, height: 7)
-                        Text("\(src) · Live").foregroundStyle(t.bull)
-                    case .polling(let src):
-                        Circle().fill(store.marketStatus.isOpen ? t.bull : t.bear).frame(width: 7, height: 7)
-                        Text(store.marketStatus.isOpen ? "\(src) · \(store.marketStatus.sessionLabel)" : "Closed · \(store.marketStatus.detailText)")
-                            .foregroundStyle(store.marketStatus.isOpen ? t.primaryText : t.bear)
-                    case .connecting(let src):
-                        Circle().fill(t.amber).frame(width: 7, height: 7)
-                        Text("Connecting \(src)...").foregroundStyle(t.amber)
-                    case .error:
-                        Circle().fill(t.amber).frame(width: 7, height: 7)
-                        Text("Retry Feed").foregroundStyle(t.amber)
-                    case .idle:
-                        Circle().fill(t.secondaryText).frame(width: 7, height: 7)
-                        Text("Idle").foregroundStyle(t.secondaryText)
-                    }
+        Button { store.reloadMarket() } label: {
+            HStack(spacing: 5) {
+                switch store.liveFeedState {
+                case .streaming(let src):
+                    Circle().fill(t.bull).frame(width: 7, height: 7)
+                    Text("\(src) · Live").foregroundStyle(t.bull)
+                case .polling(let src):
+                    Circle().fill(store.marketStatus.isOpen ? t.bull : t.bear).frame(width: 7, height: 7)
+                    Text(store.marketStatus.isOpen ? "\(src) · \(store.marketStatus.sessionLabel)" : "Closed · \(store.marketStatus.detailText)")
+                        .foregroundStyle(store.marketStatus.isOpen ? t.primaryText : t.bear)
+                case .connecting(let src):
+                    Circle().fill(t.amber).frame(width: 7, height: 7)
+                    Text("Connecting \(src)...").foregroundStyle(t.amber)
+                case .error:
+                    Circle().fill(t.amber).frame(width: 7, height: 7)
+                    Text("Retry Feed").foregroundStyle(t.amber)
+                case .idle:
+                    Circle().fill(t.secondaryText).frame(width: 7, height: 7)
+                    Text("Idle").foregroundStyle(t.secondaryText)
                 }
-                .font(.system(size: 11, weight: .semibold))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
             }
-            .buttonStyle(.plain)
-        } else {
-            Button {
-                if !store.marketStatus.isOpen { store.allowClosedMarketSim.toggle() }
-                else { store.liveTickSimulation.toggle() }
-            } label: {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(store.isReceivingTicks ? t.bull : (!store.marketStatus.isOpen ? t.bear : t.secondaryText))
-                        .frame(width: 7, height: 7)
-                    if !store.marketStatus.isOpen && !store.allowClosedMarketSim {
-                        Text("Closed · \(store.marketStatus.detailText)").foregroundStyle(t.bear)
-                    } else if !store.marketStatus.isOpen && store.allowClosedMarketSim {
-                        Text("Weekend Sim").foregroundStyle(t.amber)
-                    } else {
-                        Text(store.liveTickSimulation ? "\(store.marketStatus.sessionLabel) · Sim" : "Paused").foregroundStyle(t.primaryText)
-                    }
-                }
-                .font(.system(size: 11, weight: .semibold))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .semibold))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
         }
+        .buttonStyle(.plain)
     }
 }
 

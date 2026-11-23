@@ -95,7 +95,7 @@ struct IndicatorDrawerView: View {
                         .frame(height: 7)
 
                         if store.orderFlowTrades.isEmpty {
-                            Text(store.instrument.binanceSymbol == nil && store.dataMode == .live
+                            Text(store.instrument.binanceSymbol == nil
                                  ? "Live trade tape streams on PAXG/USDT (Gold 24/7), BTC/USD & ETH/USD."
                                  : "Waiting for incoming trades...")
                                 .font(.system(size: 11.5))

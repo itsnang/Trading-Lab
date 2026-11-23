@@ -15,6 +15,10 @@ protocol MarketDataAdapter: AnyObject {
         timeframe: Timeframe
     ) async throws -> [Candle]
 
+    func fetchLiveSpotQuote(
+        instrument: Instrument
+    ) async throws -> (price: Double, timestamp: Date)?
+
     func startBinanceStream(
         symbol: String,
         interval: String,
@@ -24,6 +28,12 @@ protocol MarketDataAdapter: AnyObject {
     )
 
     func disconnectStream()
+}
+
+extension MarketDataAdapter {
+    func fetchLiveSpotQuote(instrument: Instrument) async throws -> (price: Double, timestamp: Date)? {
+        nil
+    }
 }
 
 /// Injectable local persistence seam so tests never touch ~/Library/Application Support/TradingLab.

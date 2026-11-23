@@ -62,6 +62,34 @@ final class LiveMarketService: MarketDataAdapter {
         return try await fetchYahooWindow(symbol: encoded, timeframe: timeframe, interval: interval, querySuffix: "interval=\(interval)&range=\(tailRange)&includePrePost=true")
     }
 
+    /// Fetches zero-delay real-time spot bid/ask mid price from Swissquote public BBO feed
+    /// for Spot Gold (XAU/USD) and EUR/USD (~0.15s latency, zero API key).
+    func fetchLiveSpotQuote(instrument: Instrument) async throws -> (price: Double, timestamp: Date)? {
+        guard let path = instrument.swissquotePath,
+              let url = URL(string: "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/\(path)") else {
+            return nil
+        }
+        let (data, response) = try await session.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              let first = arr.first,
+              let profiles = first["spreadProfilePrices"] as? [[String: Any]] else {
+            throw URLError(.cannotParseResponse)
+        }
+        let chosen = profiles.first(where: { ($0["spreadProfile"] as? String) == "elite" })
+            ?? profiles.first(where: { ($0["spreadProfile"] as? String) == "prime" })
+            ?? profiles.last
+        guard let p = chosen,
+              let bid = doubleFromAny(p["bid"] as Any),
+              let ask = doubleFromAny(p["ask"] as Any),
+              bid > 0, ask > 0 else {
+            throw URLError(.cannotParseResponse)
+        }
+        let mid = (bid + ask) * 0.5
+        let tsMs = doubleFromAny(first["ts"] as Any) ?? (Date().timeIntervalSince1970 * 1000.0)
+        return (mid, Date(timeIntervalSince1970: tsMs / 1000.0))
+    }
+
     private func fetchBinanceKlines(symbol: String, interval: String, limit: Int, endTime: Date? = nil) async throws -> [Candle] {
         let hosts = ["https://data-api.binance.vision", "https://api.binance.com"]
         var lastError: Error = URLError(.cannotConnectToHost)
@@ -176,24 +204,29 @@ final class LiveMarketService: MarketDataAdapter {
                           let o = doubleFromAny(opens[i]),
                           let h = doubleFromAny(highs[i]),
                           let l = doubleFromAny(lows[i]),
-                          let c = doubleFromAny(closes[i]) else { continue }
+                          let c = doubleFromAny(closes[i]),
+                          o.isFinite, h.isFinite, l.isFinite, c.isFinite,
+                          o > 0, h > 0, l > 0, c > 0 else { continue }
                     let v = (i < vols.count ? doubleFromAny(vols[i]) : nil) ?? 0.0
+                    let safeHigh = max(o, h, l, c)
+                    let safeLow = min(o, h, l, c)
                     rawCandles.append(Candle(
                         id: rawCandles.count,
                         timestamp: Date(timeIntervalSince1970: timestamps[i]),
                         open: o,
-                        high: h,
-                        low: l,
+                        high: safeHigh,
+                        low: safeLow,
                         close: c,
-                        volume: max(v, 1.0)
+                        volume: max(v, 0.0)
                     ))
                 }
 
-                if timeframe == .h4 {
-                    rawCandles = aggregateCandles(rawCandles, bucketSeconds: 14400)
-                }
+                // Always normalize Yahoo bars to the active timeframe bucket so Yahoo's unaligned
+                // trailing live quote tick (e.g. 09:10:13 with O=H=L=C, V=0 inside a 09:00 M15 bar)
+                // merges into the active candle instead of creating duplicate flat bars.
+                rawCandles = aggregateCandles(rawCandles, bucketSeconds: timeframe.seconds)
                 let reindexed = rawCandles.enumerated().map { idx, c in
-                    Candle(id: idx, timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume)
+                    Candle(id: idx, timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: max(c.volume, 1.0))
                 }
                 if !reindexed.isEmpty { return reindexed }
             } catch {

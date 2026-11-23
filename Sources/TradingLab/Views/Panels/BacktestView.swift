@@ -13,7 +13,7 @@ struct BacktestView: View {
                     Text("Causal Strategy Backtester — \(store.instrument.rawValue) (\(store.timeframe.rawValue))")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(t.primaryText)
-                    Text("Evaluates your 4-stage rules bar-by-bar on \(store.dataMode.rawValue) candles (\(store.visibleSeries.count) bars) with zero lookahead.")
+                    Text("Evaluates your 4-stage rules bar-by-bar on live candles (\(store.visibleSeries.count) bars) with zero lookahead.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(t.secondaryText)
                 }

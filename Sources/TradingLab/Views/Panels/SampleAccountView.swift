@@ -12,7 +12,7 @@ struct SampleAccountView: View {
                     Text("Paper Trading Account")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(t.primaryText)
-                    Text("Practice risk sizing and execution on live or sample feeds with zero real-money risk. Closed trades auto-log to your Journal.")
+                    Text("Practice risk sizing and execution on live market feeds with zero real-money risk. Closed trades auto-log to your Journal.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(t.secondaryText)
                 }
