@@ -124,13 +124,14 @@ final class TradingLabAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-@main
-struct TradingLabApp: App {
+public struct TradingLabApp: App {
     @NSApplicationDelegateAdaptor(TradingLabAppDelegate.self) var appDelegate
     @StateObject private var store = WorkspaceStore()
 
-    var body: some Scene {
-        WindowGroup("Trading Lab") {
+    public init() {}
+
+    public var body: some Scene {
+        WindowGroup("MSNR Desk") {
             ContentView()
                 .environmentObject(store)
                 .preferredColorScheme(store.isDarkTheme ? .dark : .light)

@@ -7,12 +7,23 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "TradingLab", targets: ["TradingLab"])
+        .executable(name: "TradingLab", targets: ["TradingLab"]),
+        .library(name: "TradingLabCore", targets: ["TradingLabCore"])
     ],
     targets: [
+        .target(
+            name: "TradingLabCore",
+            path: "Sources/TradingLab"
+        ),
         .executableTarget(
             name: "TradingLab",
-            path: "Sources/TradingLab"
+            dependencies: ["TradingLabCore"],
+            path: "Sources/TradingLabEntry"
+        ),
+        .testTarget(
+            name: "TradingLabTests",
+            dependencies: ["TradingLabCore"],
+            path: "Tests/TradingLabTests"
         )
     ]
 )

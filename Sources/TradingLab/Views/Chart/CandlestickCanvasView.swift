@@ -1192,6 +1192,20 @@ struct CandlestickCanvasView: View {
                 ctx.stroke(tpp, with: .color(t.bull.opacity(0.7)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
             }
         }
+
+        for ord in store.paperPendingOrders where ord.instrument == store.instrument {
+            let y = range.y(forPrice: ord.entryPrice, topPadding: topPadding, plotHeight: plotHeight)
+            var p = Path(); p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: plotWidth, y: y))
+            ctx.stroke(p, with: .color(t.amber.opacity(0.85)), style: StrokeStyle(lineWidth: 1.15, dash: [6, 4]))
+            let pill = CGRect(x: 12, y: y - 9, width: 152, height: 18)
+            ctx.fill(Path(roundedRect: pill, cornerRadius: 4), with: .color(t.amber))
+            ctx.draw(
+                Text(String(format: "%@ %@ %.2f @ %@", ord.isBuy ? "BUY" : "SELL", ord.kind.rawValue.uppercased(), ord.lots, store.instrument.formatPrice(ord.entryPrice)))
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white),
+                at: CGPoint(x: pill.midX, y: pill.midY)
+            )
+        }
     }
 
     // MARK: - User Drawings + Interactive Selection Handles

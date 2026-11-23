@@ -89,6 +89,26 @@ struct SampleAccountView: View {
                                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundStyle(pnl >= 0 ? t.bull : t.bear)
 
+                            Button("50%") {
+                                store.partialClosePaperPosition(id: pos.id, fraction: 0.5)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(t.accent)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(t.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+
+                            Button("BE") {
+                                store.movePaperPositionToBreakeven(id: pos.id)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(t.amber)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(t.amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+
                             Button("Close & Log") {
                                 store.closeSamplePosition(id: pos.id)
                             }
@@ -108,6 +128,47 @@ struct SampleAccountView: View {
             .padding(18)
             .background(t.cardBg, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(t.border, lineWidth: 1))
+
+            if !store.paperPendingOrders.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("PENDING LIMIT / STOP ORDERS (\(store.paperPendingOrders.count))")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(t.secondaryText)
+
+                    ForEach(store.paperPendingOrders) { ord in
+                        HStack(spacing: 14) {
+                            Text("\(ord.isBuy ? "BUY" : "SELL") \(ord.kind.rawValue.uppercased())")
+                                .font(.system(size: 10.5, weight: .black, design: .monospaced))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3.5)
+                                .background(t.amber.opacity(0.16), in: RoundedRectangle(cornerRadius: 5))
+                                .foregroundStyle(t.amber)
+
+                            Text(ord.instrument.rawValue)
+                                .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(t.primaryText)
+
+                            Text(String(format: "%.2f lots @ %@", ord.lots, ord.instrument.formatPrice(ord.entryPrice)))
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(t.primaryText)
+
+                            Spacer()
+
+                            Button("Cancel") {
+                                store.cancelPendingOrder(id: ord.id)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(t.bear)
+                        }
+                        .padding(10)
+                        .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .padding(18)
+                .background(t.cardBg, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(t.border, lineWidth: 1))
+            }
 
             Spacer()
         }

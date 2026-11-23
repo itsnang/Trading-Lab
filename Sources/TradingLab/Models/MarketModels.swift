@@ -414,11 +414,39 @@ enum SampleMarketEngine {
     }
 }
 
+enum PendingOrderKind: String, CaseIterable, Identifiable, Codable {
+    case limit = "Limit"
+    case stop = "Stop"
+
+    var id: String { rawValue }
+}
+
+struct PaperPendingOrder: Identifiable, Hashable, Codable {
+    let id: UUID
+    let instrument: Instrument
+    let kind: PendingOrderKind
+    let isBuy: Bool
+    let lots: Double
+    var entryPrice: Double
+    var stopLoss: Double?
+    var takeProfit: Double?
+    let createdAt: Date
+
+    func shouldTrigger(barLow: Double, barHigh: Double) -> Bool {
+        switch (kind, isBuy) {
+        case (.limit, true):  return barLow <= entryPrice
+        case (.limit, false): return barHigh >= entryPrice
+        case (.stop, true):   return barHigh >= entryPrice
+        case (.stop, false):  return barLow <= entryPrice
+        }
+    }
+}
+
 struct SamplePosition: Identifiable, Hashable, Codable {
     let id: UUID
     let instrument: Instrument
     let isBuy: Bool
-    let lots: Double
+    var lots: Double
     let entryPrice: Double
     var stopLoss: Double?
     var takeProfit: Double?

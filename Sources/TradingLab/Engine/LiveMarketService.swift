@@ -3,19 +3,23 @@ import Foundation
 /// Live market data client using free, zero-API-key public endpoints:
 /// - Binance public REST + WebSocket (`data-api.binance.vision` / `data-stream.binance.vision`) for 24/7 Gold (`PAXGUSDT`) & Crypto (`BTCUSDT`, `ETHUSDT`)
 /// - Yahoo Finance chart REST (`query1.finance.yahoo.com`) for Gold Futures (`GC=F`), Forex (`EURUSD=X`), and Indices (`YM=F`, `NQ=F`).
-final class LiveMarketService {
+final class LiveMarketService: MarketDataAdapter {
     private let session: URLSession
     private var webSocketTask: URLSessionWebSocketTask?
     private var wsGeneration: Int = 0
 
-    init() {
-        let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 12
-        cfg.timeoutIntervalForResource = 20
-        cfg.httpAdditionalHeaders = [
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) TradingLab/1.0"
-        ]
-        self.session = URLSession(configuration: cfg)
+    init(session: URLSession? = nil) {
+        if let custom = session {
+            self.session = custom
+        } else {
+            let cfg = URLSessionConfiguration.default
+            cfg.timeoutIntervalForRequest = 12
+            cfg.timeoutIntervalForResource = 20
+            cfg.httpAdditionalHeaders = [
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) TradingLab/1.0"
+            ]
+            self.session = URLSession(configuration: cfg)
+        }
     }
 
     func disconnectStream() {
@@ -29,14 +33,16 @@ final class LiveMarketService {
     func fetchHistoricalCandles(
         instrument: Instrument,
         timeframe: Timeframe,
-        limit: Int = 260
+        limit: Int = 260,
+        endTime: Date? = nil
     ) async throws -> (candles: [Candle], provider: String) {
         if let binanceSym = instrument.binanceSymbol {
             do {
-                let candles = try await fetchBinanceKlines(symbol: binanceSym, interval: timeframe.binanceInterval, limit: limit)
+                let candles = try await fetchBinanceKlines(symbol: binanceSym, interval: timeframe.binanceInterval, limit: min(1000, max(1, limit)), endTime: endTime)
                 return (candles, "Binance")
             } catch {
-                // Fallback to Yahoo if Binance is unreachable
+                // Fallback to Yahoo only for initial load (not Binance backward pagination)
+                if endTime != nil { throw error }
                 let candles = try await fetchYahooCandles(symbol: instrument.yahooSymbol, timeframe: timeframe)
                 return (candles, "Yahoo Finance")
             }
@@ -46,15 +52,39 @@ final class LiveMarketService {
         }
     }
 
-    private func fetchBinanceKlines(symbol: String, interval: String, limit: Int) async throws -> [Candle] {
+    func fetchLiveTailCandles(
+        instrument: Instrument,
+        timeframe: Timeframe
+    ) async throws -> [Candle] {
+        let encoded = instrument.yahooSymbol.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? instrument.yahooSymbol
+        let interval = timeframe.yahooParams.interval
+        let tailRange = (timeframe == .d1) ? "5d" : "1d"
+        return try await fetchYahooWindow(symbol: encoded, timeframe: timeframe, interval: interval, querySuffix: "interval=\(interval)&range=\(tailRange)&includePrePost=true")
+    }
+
+    private func fetchBinanceKlines(symbol: String, interval: String, limit: Int, endTime: Date? = nil) async throws -> [Candle] {
         let hosts = ["https://data-api.binance.vision", "https://api.binance.com"]
         var lastError: Error = URLError(.cannotConnectToHost)
+        let endParam: String
+        if let endTime {
+            let ms = Int64(endTime.timeIntervalSince1970 * 1000.0)
+            endParam = "&endTime=\(ms)"
+        } else {
+            endParam = ""
+        }
 
         for host in hosts {
-            guard let url = URL(string: "\(host)/api/v3/klines?symbol=\(symbol)&interval=\(interval)&limit=\(limit)") else { continue }
+            guard let url = URL(string: "\(host)/api/v3/klines?symbol=\(symbol)&interval=\(interval)&limit=\(limit)\(endParam)") else { continue }
             do {
                 let (data, response) = try await session.data(from: url)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                guard let http = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                if http.statusCode == 429 || http.statusCode == 418 {
+                    // Never fail over to api.binance.com on 429/418 — both hosts share the same IP weight bucket!
+                    throw URLError(.resourceUnavailable)
+                }
+                guard (200..<300).contains(http.statusCode) else {
                     throw URLError(.badServerResponse)
                 }
                 guard let rows = try JSONSerialization.jsonObject(with: data) as? [[Any]] else {
@@ -83,19 +113,40 @@ final class LiveMarketService {
                 if !candles.isEmpty { return candles }
             } catch {
                 lastError = error
+                if (error as? URLError)?.code == .resourceUnavailable { throw error }
             }
         }
         throw lastError
     }
 
     private func fetchYahooCandles(symbol: String, timeframe: Timeframe) async throws -> [Candle] {
-        let params = timeframe.yahooParams
         let encoded = symbol.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? symbol
+        let nowSec = Int(Date().timeIntervalSince1970)
+        // Respect verified Yahoo intraday retention caps and avoid range=max 1d->1mo downgrade:
+        // 1m: 7d window (within 30d), 5m/15m/30m: 59d, 60m/h4: 729d, 1d: 10y via period1/period2
+        switch timeframe {
+        case .m1:
+            let p1 = nowSec - 7 * 86400
+            return try await fetchYahooWindow(symbol: encoded, timeframe: timeframe, interval: "1m", querySuffix: "interval=1m&period1=\(p1)&period2=\(nowSec)&includePrePost=true")
+        case .m5, .m15, .m30:
+            let interval = timeframe.yahooParams.interval
+            let p1 = nowSec - 59 * 86400
+            return try await fetchYahooWindow(symbol: encoded, timeframe: timeframe, interval: interval, querySuffix: "interval=\(interval)&period1=\(p1)&period2=\(nowSec)&includePrePost=true")
+        case .h1, .h4:
+            let p1 = nowSec - 365 * 86400
+            return try await fetchYahooWindow(symbol: encoded, timeframe: timeframe, interval: "60m", querySuffix: "interval=60m&period1=\(p1)&period2=\(nowSec)&includePrePost=true")
+        case .d1:
+            let p1 = nowSec - 10 * 365 * 86400
+            return try await fetchYahooWindow(symbol: encoded, timeframe: timeframe, interval: "1d", querySuffix: "interval=1d&period1=\(p1)&period2=\(nowSec)&includePrePost=true")
+        }
+    }
+
+    private func fetchYahooWindow(symbol encoded: String, timeframe: Timeframe, interval: String, querySuffix: String) async throws -> [Candle] {
         let hosts = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]
         var lastError: Error = URLError(.cannotConnectToHost)
 
         for host in hosts {
-            guard let url = URL(string: "\(host)/v8/finance/chart/\(encoded)?interval=\(params.interval)&range=\(params.range)&includePrePost=true") else { continue }
+            guard let url = URL(string: "\(host)/v8/finance/chart/\(encoded)?\(querySuffix)") else { continue }
             do {
                 let (data, response) = try await session.data(from: url)
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -138,14 +189,13 @@ final class LiveMarketService {
                     ))
                 }
 
-                // Aggregate 1H -> 4H cleanly when user picks H4
                 if timeframe == .h4 {
                     rawCandles = aggregateCandles(rawCandles, bucketSeconds: 14400)
                 }
-                let trimmed = Array(rawCandles.suffix(260)).enumerated().map { idx, c in
+                let reindexed = rawCandles.enumerated().map { idx, c in
                     Candle(id: idx, timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume)
                 }
-                if !trimmed.isEmpty { return trimmed }
+                if !reindexed.isEmpty { return reindexed }
             } catch {
                 lastError = error
             }
@@ -242,9 +292,20 @@ final class LiveMarketService {
         onTrade: @escaping @Sendable (OrderFlowTrade) -> Void
     ) {
         guard let data = text.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let stream = root["stream"] as? String,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        if (root["e"] as? String) == "serverShutdown" {
+            disconnectStream()
+            return
+        }
+
+        guard let stream = root["stream"] as? String,
               let payload = root["data"] as? [String: Any] else { return }
+
+        if (payload["e"] as? String) == "serverShutdown" {
+            disconnectStream()
+            return
+        }
 
         if stream.contains("@kline_"), let k = payload["k"] as? [String: Any] {
             guard let tMs = k["t"] as? Double ?? (k["t"] as? Int).map(Double.init),

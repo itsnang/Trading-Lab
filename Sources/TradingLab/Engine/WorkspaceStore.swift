@@ -135,11 +135,14 @@ final class WorkspaceStore: ObservableObject {
         didSet { recomputeBacktest() }
     }
 
-    // Risk Calculator & Paper Trading Account
+    // Risk Calculator & Paper Desk Account
     @Published var sampleBalance: Double = 10_000.0 {
         didSet { saveWorkspacePrefs() }
     }
     @Published var samplePositions: [SamplePosition] = [] {
+        didSet { saveWorkspacePrefs() }
+    }
+    @Published var paperPendingOrders: [PaperPendingOrder] = [] {
         didSet { saveWorkspacePrefs() }
     }
     @Published var riskPercentPerTrade: Double = 1.0 {
@@ -161,8 +164,14 @@ final class WorkspaceStore: ObservableObject {
     // Persistent Trade Journal
     @Published var journalEntries: [JournalEntry] = []
 
-    private let liveService = LiveMarketService()
+    private let liveService: MarketDataAdapter
+    private let persistence: PersistenceAdapter
     private var loadTask: Task<Void, Never>?
+    private var backfillTask: Task<Void, Never>?
+    private var isBackfillingHistory: Bool = false
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var reconnectAttempt: Int = 0
+    private var wsRotationTimer: Timer?
     private var pollTimer: Timer?
     private var tickTimer: Timer?
     private var replayTimer: Timer?
@@ -256,7 +265,14 @@ final class WorkspaceStore: ObservableObject {
         return liveTickSimulation && !isReplayMode && (marketStatus.isOpen || allowClosedMarketSim)
     }
 
-    init(ephemeralPreview: Bool = false) {
+    init(
+        ephemeralPreview: Bool = false,
+        marketService: MarketDataAdapter = LiveMarketService(),
+        persistence: PersistenceAdapter = DiskPersistenceAdapter(),
+        startTimers: Bool = true
+    ) {
+        self.liveService = marketService
+        self.persistence = persistence
         self.isEphemeralPreview = ephemeralPreview
         if ephemeralPreview {
             self.dataMode = .sample
@@ -266,10 +282,10 @@ final class WorkspaceStore: ObservableObject {
             reloadMarket()
             return
         }
-        self.drawingsByInstrument = PersistenceStore.loadDrawings()
-        self.journalEntries = PersistenceStore.loadJournal()
-        self.alerts = PersistenceStore.loadAlerts()
-        if let prefs = PersistenceStore.loadPrefs() {
+        self.drawingsByInstrument = persistence.loadDrawings()
+        self.journalEntries = persistence.loadJournal()
+        self.alerts = persistence.loadAlerts()
+        if let prefs = persistence.loadPrefs() {
             self.isDarkTheme = prefs.isDarkTheme
             self.activeStudies = prefs.activeStudies
             self.indicatorConfig = prefs.indicatorConfig
@@ -289,16 +305,19 @@ final class WorkspaceStore: ObservableObject {
             self.orderTakeProfitPips = prefs.orderTakeProfitPips
             self.sampleBalance = prefs.sampleBalance
             self.samplePositions = prefs.samplePositions
+            self.paperPendingOrders = prefs.paperPendingOrders
         }
         self.isBootstrapping = false
-        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.saveWorkspacePrefs()
+        if startTimers {
+            NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.saveWorkspacePrefs()
+                }
             }
+            reloadMarket()
+            startSampleTickTimer()
+            startCountdownTimer()
         }
-        reloadMarket()
-        startSampleTickTimer()
-        startCountdownTimer()
     }
 
     deinit {
@@ -340,7 +359,7 @@ final class WorkspaceStore: ObservableObject {
 
     private func saveWorkspacePrefs() {
         guard !isBootstrapping, !isEphemeralPreview else { return }
-        PersistenceStore.savePrefs(WorkspacePrefs(
+        persistence.savePrefs(WorkspacePrefs(
             isDarkTheme: isDarkTheme,
             activeStudies: activeStudies,
             indicatorConfig: indicatorConfig,
@@ -359,7 +378,8 @@ final class WorkspaceStore: ObservableObject {
             orderStopPips: orderStopPips,
             orderTakeProfitPips: orderTakeProfitPips,
             sampleBalance: sampleBalance,
-            samplePositions: samplePositions
+            samplePositions: samplePositions,
+            paperPendingOrders: paperPendingOrders
         ))
     }
 
@@ -374,12 +394,12 @@ final class WorkspaceStore: ObservableObject {
             note: note
         )
         alerts.insert(alert, at: 0)
-        PersistenceStore.saveAlerts(alerts)
+        persistence.saveAlerts(alerts)
     }
 
     func removeAlert(id: UUID) {
         alerts.removeAll { $0.id == id }
-        PersistenceStore.saveAlerts(alerts)
+        persistence.saveAlerts(alerts)
     }
 
     private func evaluateAlerts(currentPrice: Double) {
@@ -394,13 +414,19 @@ final class WorkspaceStore: ObservableObject {
                 changed = true
             }
         }
-        if changed { PersistenceStore.saveAlerts(alerts) }
+        if changed { persistence.saveAlerts(alerts) }
     }
 
     // MARK: - Market Loading (LIVE + SAMPLE)
 
     func reloadMarket() {
         loadTask?.cancel()
+        backfillTask?.cancel()
+        isBackfillingHistory = false
+        reconnectWorkItem?.cancel()
+        reconnectAttempt = 0
+        wsRotationTimer?.invalidate()
+        wsRotationTimer = nil
         liveService.disconnectStream()
         pollTimer?.invalidate()
         pollTimer = nil
@@ -418,7 +444,7 @@ final class WorkspaceStore: ObservableObject {
             allCandles = SampleMarketEngine.generateCandles(
                 instrument: instrument,
                 timeframe: timeframe,
-                count: 260
+                count: 500
             )
             replayIndex = max(60, allCandles.count - 55)
             recomputeIndicators()
@@ -435,7 +461,8 @@ final class WorkspaceStore: ObservableObject {
                 let res = try await self.liveService.fetchHistoricalCandles(
                     instrument: selectedInstrument,
                     timeframe: selectedTimeframe,
-                    limit: 260
+                    limit: 500,
+                    endTime: nil
                 )
                 guard !Task.isCancelled,
                       self.dataMode == .live,
@@ -458,19 +485,83 @@ final class WorkspaceStore: ObservableObject {
                 self.allCandles = SampleMarketEngine.generateCandles(
                     instrument: selectedInstrument,
                     timeframe: selectedTimeframe,
-                    count: 260
+                    count: 500
                 )
                 self.recomputeIndicators()
             }
         }
     }
 
+    /// Paginates older historical candles backward using endTime = earliestOpenMs - 1ms
+    /// and prepends deduplicated bars while keeping visible scroll and drawings anchored.
+    func backfillOlderHistory() async {
+        guard dataMode == .live,
+              !isBackfillingHistory,
+              allCandles.count < 4000,
+              let earliest = allCandles.first else { return }
+
+        isBackfillingHistory = true
+        defer { isBackfillingHistory = false }
+
+        let targetInstrument = instrument
+        let targetTimeframe = timeframe
+        let endTime = earliest.timestamp.addingTimeInterval(-0.001)
+
+        do {
+            let res = try await liveService.fetchHistoricalCandles(
+                instrument: targetInstrument,
+                timeframe: targetTimeframe,
+                limit: 500,
+                endTime: endTime
+            )
+            guard dataMode == .live,
+                  instrument == targetInstrument,
+                  timeframe == targetTimeframe else { return }
+
+            let olderUnique = res.candles
+                .filter { $0.timestamp.timeIntervalSince1970 < earliest.timestamp.timeIntervalSince1970 - 0.5 }
+                .sorted { $0.timestamp < $1.timestamp }
+
+            guard !olderUnique.isEmpty else { return }
+
+            let prependedCount = olderUnique.count
+            let combined = (olderUnique + allCandles).enumerated().map { idx, item in
+                Candle(
+                    id: idx,
+                    timestamp: item.timestamp,
+                    open: item.open,
+                    high: item.high,
+                    low: item.low,
+                    close: item.close,
+                    volume: item.volume
+                )
+            }
+            allCandles = combined
+            if isReplayMode {
+                replayIndex += prependedCount
+            }
+            recomputeIndicators()
+        } catch {
+            // Best-effort backfill; ignore transient network/429 failure
+        }
+    }
+
     private func startLiveBinanceStream(symbol: String, interval: String) {
+        wsRotationTimer?.invalidate()
+        // Proactive 23h45m rotation before Binance's hard 24h WebSocket cutoff
+        wsRotationTimer = Timer.scheduledTimer(withTimeInterval: 85_500, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.dataMode == .live, let sym = self.instrument.binanceSymbol else { return }
+                self.startLiveBinanceStream(symbol: sym, interval: self.timeframe.binanceInterval)
+            }
+        }
+
         liveService.startBinanceStream(
             symbol: symbol,
             interval: interval,
             onKline: { [weak self] ts, o, h, l, c, v in
                 Task { @MainActor [weak self] in
+                    self?.reconnectAttempt = 0
                     self?.applyLiveKline(timestamp: ts, open: o, high: h, low: l, close: c, volume: v)
                 }
             },
@@ -481,10 +572,39 @@ final class WorkspaceStore: ObservableObject {
             },
             onStatus: { [weak self] status in
                 Task { @MainActor [weak self] in
-                    self?.liveFeedState = status
+                    guard let self else { return }
+                    self.liveFeedState = status
+                    if case .error = status, self.dataMode == .live, self.instrument.binanceSymbol == symbol {
+                        self.scheduleBinanceReconnect(symbol: symbol, interval: interval)
+                    }
                 }
             }
         )
+    }
+
+    private func scheduleBinanceReconnect(symbol: String, interval: String) {
+        reconnectWorkItem?.cancel()
+        let expDelay = min(60.0, pow(2.0, Double(min(reconnectAttempt, 6))))
+        let jitter = Double.random(in: 0.8...1.2)
+        let delay = max(1.0, expDelay * jitter)
+        reconnectAttempt += 1
+
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.dataMode == .live, self.instrument.binanceSymbol == symbol else { return }
+                if let gap = try? await self.liveService.fetchHistoricalCandles(
+                    instrument: self.instrument,
+                    timeframe: self.timeframe,
+                    limit: 60,
+                    endTime: nil
+                ) {
+                    self.mergeTailCandles(gap.candles)
+                }
+                self.startLiveBinanceStream(symbol: symbol, interval: interval)
+            }
+        }
+        reconnectWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func startYahooPolling(instrument: Instrument, timeframe: Timeframe) {
@@ -494,15 +614,46 @@ final class WorkspaceStore: ObservableObject {
                 guard let self, self.dataMode == .live, !self.isReplayMode,
                       self.instrument == instrument, self.timeframe == timeframe else { return }
                 self.marketStatus = instrument.marketStatus()
-                if let res = try? await self.liveService.fetchHistoricalCandles(
+                guard self.marketStatus.isOpen else { return }
+                if let tail = try? await self.liveService.fetchLiveTailCandles(
                     instrument: instrument,
-                    timeframe: timeframe,
-                    limit: 260
-                ), !res.candles.isEmpty {
-                    self.allCandles = res.candles
+                    timeframe: timeframe
+                ), !tail.isEmpty {
+                    self.mergeTailCandles(tail)
                     self.recomputeIndicators()
                     self.evaluateAlerts(currentPrice: self.lastPrice)
                 }
+            }
+        }
+    }
+
+    private func mergeTailCandles(_ incoming: [Candle]) {
+        guard !incoming.isEmpty else { return }
+        if allCandles.isEmpty {
+            allCandles = incoming
+            return
+        }
+        for bar in incoming {
+            if let idx = allCandles.lastIndex(where: { abs($0.timestamp.timeIntervalSince(bar.timestamp)) < 1.0 }) {
+                allCandles[idx] = Candle(
+                    id: allCandles[idx].id,
+                    timestamp: bar.timestamp,
+                    open: bar.open,
+                    high: bar.high,
+                    low: bar.low,
+                    close: bar.close,
+                    volume: bar.volume
+                )
+            } else if let last = allCandles.last, bar.timestamp > last.timestamp {
+                allCandles.append(Candle(
+                    id: last.id + 1,
+                    timestamp: bar.timestamp,
+                    open: bar.open,
+                    high: bar.high,
+                    low: bar.low,
+                    close: bar.close,
+                    volume: bar.volume
+                ))
             }
         }
     }
@@ -530,8 +681,8 @@ final class WorkspaceStore: ObservableObject {
                 close: close,
                 volume: volume
             ))
-            if allCandles.count > 320 {
-                allCandles.removeFirst(allCandles.count - 320)
+            if allCandles.count > 4500 {
+                allCandles.removeFirst(allCandles.count - 4500)
                 allCandles = allCandles.enumerated().map { idx, item in
                     Candle(id: idx, timestamp: item.timestamp, open: item.open, high: item.high, low: item.low, close: item.close, volume: item.volume)
                 }
@@ -539,6 +690,7 @@ final class WorkspaceStore: ObservableObject {
         }
         recomputeIndicators()
         evaluateAlerts(currentPrice: close)
+        evaluatePaperDeskExecution(barLow: low, barHigh: high, currentPrice: close)
     }
 
     private func ingestOrderFlowTrade(_ trade: OrderFlowTrade) {
@@ -588,6 +740,14 @@ final class WorkspaceStore: ObservableObject {
     func pan(deltaBars: Double) {
         let maxScrollBack = Double(max(0, visibleSeries.count - 10))
         rightOffsetBars = max(-maxScrollBack, min(120.0, rightOffsetBars + deltaBars))
+
+        // Trigger background backfill when panning within 35 bars of the earliest loaded candle
+        let leftVisibleIdx = Double(visibleSeries.count - 1) + rightOffsetBars - visibleCandleCount
+        if leftVisibleIdx < 35.0, dataMode == .live, !isBackfillingHistory {
+            backfillTask = Task { [weak self] in
+                await self?.backfillOlderHistory()
+            }
+        }
     }
 
     func scalePriceAxis(deltaY: CGFloat, currentMin: Double, currentMax: Double) {
@@ -643,7 +803,7 @@ final class WorkspaceStore: ObservableObject {
         list.append(drawing)
         drawingsByInstrument[instrument] = list
         selectedDrawingId = drawing.id
-        PersistenceStore.saveDrawings(drawingsByInstrument)
+        persistence.saveDrawings(drawingsByInstrument)
     }
 
     func updateDrawing(_ updated: DrawingObject, persist: Bool = false) {
@@ -652,7 +812,7 @@ final class WorkspaceStore: ObservableObject {
         list[idx] = updated
         drawingsByInstrument[instrument] = list
         if persist {
-            PersistenceStore.saveDrawings(drawingsByInstrument)
+            persistence.saveDrawings(drawingsByInstrument)
         }
     }
 
@@ -692,7 +852,7 @@ final class WorkspaceStore: ObservableObject {
         list.removeAll { $0.id == id }
         drawingsByInstrument[instrument] = list
         if selectedDrawingId == id { selectedDrawingId = nil }
-        PersistenceStore.saveDrawings(drawingsByInstrument)
+        persistence.saveDrawings(drawingsByInstrument)
     }
 
     func undoDrawing() {
@@ -700,7 +860,7 @@ final class WorkspaceStore: ObservableObject {
         undoStackByInstrument[instrument] = stack
         drawingsByInstrument[instrument] = previous
         selectedDrawingId = nil
-        PersistenceStore.saveDrawings(drawingsByInstrument)
+        persistence.saveDrawings(drawingsByInstrument)
     }
 
     func clearDrawings() {
@@ -708,7 +868,7 @@ final class WorkspaceStore: ObservableObject {
         pushDrawingUndoSnapshot()
         drawingsByInstrument[instrument] = []
         selectedDrawingId = nil
-        PersistenceStore.saveDrawings(drawingsByInstrument)
+        persistence.saveDrawings(drawingsByInstrument)
     }
 
     // MARK: - Bar Replay
@@ -810,9 +970,10 @@ final class WorkspaceStore: ObservableObject {
         ingestOrderFlowTrade(simTrade)
         recomputeIndicators()
         evaluateAlerts(currentPrice: nextClose)
+        evaluatePaperDeskExecution(barLow: last.low, barHigh: last.high, currentPrice: nextClose)
     }
 
-    // MARK: - Paper Orders & Auto-Journal Logging
+    // MARK: - Paper Desk Execution, Pending Orders & Auto-Journal Logging
 
     func openSampleOrder(isBuy: Bool) {
         let entry = isBuy ? (lastPrice + instrument.spread * 0.5) : (lastPrice - instrument.spread * 0.5)
@@ -833,31 +994,137 @@ final class WorkspaceStore: ObservableObject {
         samplePositions.insert(pos, at: 0)
     }
 
-    func closeSamplePosition(id: UUID) {
+    func placePendingOrder(kind: PendingOrderKind, isBuy: Bool, entryPrice: Double) {
+        let slDist = orderStopPips * instrument.pipSize
+        let tpDist = orderTakeProfitPips * instrument.pipSize
+        let sl = orderStopPips > 0 ? (isBuy ? entryPrice - slDist : entryPrice + slDist) : nil
+        let tp = orderTakeProfitPips > 0 ? (isBuy ? entryPrice + tpDist : entryPrice - tpDist) : nil
+        let pending = PaperPendingOrder(
+            id: UUID(),
+            instrument: instrument,
+            kind: kind,
+            isBuy: isBuy,
+            lots: effectiveOrderLots,
+            entryPrice: entryPrice,
+            stopLoss: sl,
+            takeProfit: tp,
+            createdAt: Date()
+        )
+        paperPendingOrders.insert(pending, at: 0)
+    }
+
+    func cancelPendingOrder(id: UUID) {
+        paperPendingOrders.removeAll { $0.id == id }
+    }
+
+    func movePaperPositionToBreakeven(id: UUID) {
+        guard let idx = samplePositions.firstIndex(where: { $0.id == id }) else { return }
+        samplePositions[idx].stopLoss = samplePositions[idx].entryPrice
+    }
+
+    func partialClosePaperPosition(id: UUID, fraction: Double = 0.5, fillPrice: Double? = nil) {
         guard let idx = samplePositions.firstIndex(where: { $0.id == id }) else { return }
         let pos = samplePositions[idx]
-        let exitPrice = (pos.instrument == instrument) ? lastPrice : pos.instrument.basePrice
-        let pnl = pos.floatingPnL(currentPrice: exitPrice)
+        let clamped = max(0.1, min(0.95, fraction))
+        let closeLots = max(0.01, (pos.lots * clamped * 100.0).rounded() / 100.0)
+        guard closeLots < pos.lots else {
+            closeSamplePosition(id: id, fillPrice: fillPrice, reasonNote: "Full close from Paper Desk")
+            return
+        }
+
+        let exitPrice = fillPrice ?? ((pos.instrument == instrument) ? lastPrice : pos.instrument.basePrice)
+        samplePositions[idx].lots = max(0.01, ((pos.lots - closeLots) * 100.0).rounded() / 100.0)
+        logClosedPaperTrade(
+            pos: pos,
+            closedLots: closeLots,
+            exitPrice: exitPrice,
+            note: "Partial close (\(Int(clamped * 100))%) from \(dataMode.rawValue) Paper Desk"
+        )
+    }
+
+    func evaluatePaperDeskExecution(barLow: Double, barHigh: Double, currentPrice: Double) {
+        // 1. Trigger eligible pending Limit / Stop orders for current instrument
+        var remainingPending: [PaperPendingOrder] = []
+        for ord in paperPendingOrders {
+            if ord.instrument == instrument && ord.shouldTrigger(barLow: barLow, barHigh: barHigh) {
+                let filled = SamplePosition(
+                    id: ord.id,
+                    instrument: ord.instrument,
+                    isBuy: ord.isBuy,
+                    lots: ord.lots,
+                    entryPrice: ord.entryPrice,
+                    stopLoss: ord.stopLoss,
+                    takeProfit: ord.takeProfit,
+                    openedAt: Date()
+                )
+                samplePositions.insert(filled, at: 0)
+            } else {
+                remainingPending.append(ord)
+            }
+        }
+        if remainingPending.count != paperPendingOrders.count {
+            paperPendingOrders = remainingPending
+        }
+
+        // 2. Check open positions for automatic SL / TP execution (conservative SL-first tie-break)
+        var toClose: [(id: UUID, price: Double, note: String)] = []
+        for pos in samplePositions where pos.instrument == instrument {
+            if let sl = pos.stopLoss {
+                let slHit = pos.isBuy ? (barLow <= sl) : (barHigh >= sl)
+                if slHit {
+                    let isBE = abs(sl - pos.entryPrice) <= pos.instrument.pipSize * 0.5
+                    toClose.append((pos.id, sl, isBE ? "Auto Breakeven Stop Fill (\(dataMode.rawValue))" : "Auto SL Fill (\(dataMode.rawValue))"))
+                    continue
+                }
+            }
+            if let tp = pos.takeProfit {
+                let tpHit = pos.isBuy ? (barHigh >= tp) : (barLow <= tp)
+                if tpHit {
+                    toClose.append((pos.id, tp, "Auto TP Fill (\(dataMode.rawValue))"))
+                }
+            }
+        }
+
+        for item in toClose {
+            closeSamplePosition(id: item.id, fillPrice: item.price, reasonNote: item.note)
+        }
+    }
+
+    func closeSamplePosition(id: UUID, fillPrice: Double? = nil, reasonNote: String? = nil) {
+        guard let idx = samplePositions.firstIndex(where: { $0.id == id }) else { return }
+        let pos = samplePositions[idx]
+        let exitPrice = fillPrice ?? ((pos.instrument == instrument) ? lastPrice : pos.instrument.basePrice)
+        logClosedPaperTrade(
+            pos: pos,
+            closedLots: pos.lots,
+            exitPrice: exitPrice,
+            note: reasonNote ?? "Closed from \(dataMode.rawValue) terminal"
+        )
+        samplePositions.remove(at: idx)
+    }
+
+    private func logClosedPaperTrade(pos: SamplePosition, closedLots: Double, exitPrice: Double, note: String) {
+        let diff = pos.isBuy ? (exitPrice - pos.entryPrice) : (pos.entryPrice - exitPrice)
+        let pipCount = diff / pos.instrument.pipSize
+        let pnl = pipCount * closedLots * pos.instrument.dollarPerPipPerLot
         sampleBalance += pnl
 
         let riskPips = pos.stopLoss.map { abs(pos.entryPrice - $0) / pos.instrument.pipSize } ?? max(orderStopPips, 10.0)
-        let riskUSD = max(1.0, riskPips * pos.lots * pos.instrument.dollarPerPipPerLot)
-        let entry = JournalEntry(
+        let riskUSD = max(1.0, max(riskPips, 1.0) * closedLots * pos.instrument.dollarPerPipPerLot)
+        addJournalEntry(JournalEntry(
             instrument: pos.instrument.rawValue,
             timeframe: timeframe.rawValue,
             isBuy: pos.isBuy,
             entryPrice: pos.entryPrice,
             exitPrice: exitPrice,
-            lots: pos.lots,
+            lots: closedLots,
             pnlUSD: pnl,
             rMultiple: pnl / riskUSD,
             setupTag: "OB Retest",
             disciplineTag: "Followed Plan",
-            notes: "Closed from \(dataMode.rawValue) terminal",
+            notes: note,
             isLiveAccount: false
-        )
-        addJournalEntry(entry)
-        samplePositions.remove(at: idx)
+        ))
     }
 
     func closeAllSamplePositions() {
@@ -867,11 +1134,11 @@ final class WorkspaceStore: ObservableObject {
 
     func addJournalEntry(_ entry: JournalEntry) {
         journalEntries.insert(entry, at: 0)
-        PersistenceStore.saveJournal(journalEntries)
+        persistence.saveJournal(journalEntries)
     }
 
     func deleteJournalEntry(id: UUID) {
         journalEntries.removeAll { $0.id == id }
-        PersistenceStore.saveJournal(journalEntries)
+        persistence.saveJournal(journalEntries)
     }
 }

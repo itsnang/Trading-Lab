@@ -1,17 +1,41 @@
 import SwiftUI
 
 /// Clean, uncluttered Trade, Risk Sizing, Order Flow Tape & Alerts drawer (toggled from top bar).
+private enum TicketOrderMode: String, CaseIterable, Identifiable {
+    case market = "Market"
+    case limit = "Limit"
+    case stop = "Stop"
+    var id: String { rawValue }
+}
+
 struct IndicatorDrawerView: View {
     @EnvironmentObject var store: WorkspaceStore
+    @State private var orderMode: TicketOrderMode = .market
+    @State private var pendingEntryPrice: Double = 0
 
     var body: some View {
         let t = store.theme
 
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                // 1. Risk-Sized Paper Order Ticket
-                panelCard(title: "RISK SIZING & ORDER TICKET", theme: t) {
+                // 1. Risk-Sized Paper Desk Order Ticket
+                panelCard(title: "PAPER DESK · RISK & ORDER TICKET", theme: t) {
                     VStack(spacing: 10) {
+                        Picker("", selection: $orderMode) {
+                            ForEach(TicketOrderMode.allCases) { m in
+                                Text(m.rawValue).tag(m)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .onChange(of: orderMode) { _, _ in
+                            if pendingEntryPrice <= 0 { pendingEntryPrice = store.lastPrice }
+                        }
+
+                        if orderMode != .market {
+                            numberField("Pending Entry Price", value: $pendingEntryPrice, theme: t)
+                        }
+
                         HStack {
                             Toggle("Auto-Size by Risk %", isOn: $store.autoSizeByRisk)
                                 .toggleStyle(.switch)
@@ -44,35 +68,8 @@ struct IndicatorDrawerView: View {
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
 
                         HStack(spacing: 8) {
-                            Button {
-                                store.openSampleOrder(isBuy: false)
-                            } label: {
-                                VStack(spacing: 2) {
-                                    Text("SELL").font(.system(size: 11, weight: .black))
-                                    Text(store.instrument.formatPrice(store.lastPrice - store.instrument.spread * 0.5))
-                                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 9)
-                                .background(t.bear, in: RoundedRectangle(cornerRadius: 9))
-                                .foregroundStyle(.white)
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                store.openSampleOrder(isBuy: true)
-                            } label: {
-                                VStack(spacing: 2) {
-                                    Text("BUY").font(.system(size: 11, weight: .black))
-                                    Text(store.instrument.formatPrice(store.lastPrice + store.instrument.spread * 0.5))
-                                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 9)
-                                .background(t.bull, in: RoundedRectangle(cornerRadius: 9))
-                                .foregroundStyle(.white)
-                            }
-                            .buttonStyle(.plain)
+                            orderActionButton(isBuy: false, color: t.bear)
+                            orderActionButton(isBuy: true, color: t.bull)
                         }
                     }
                 }
@@ -203,6 +200,31 @@ struct IndicatorDrawerView: View {
         .overlay(alignment: .leading) {
             Rectangle().fill(t.border).frame(width: 1)
         }
+    }
+
+    private func orderActionButton(isBuy: Bool, color: Color) -> some View {
+        let side = isBuy ? "BUY" : "SELL"
+        let title = orderMode == .market ? side : "\(side) \(orderMode.rawValue.uppercased())"
+        let marketPx = isBuy ? (store.lastPrice + store.instrument.spread * 0.5) : (store.lastPrice - store.instrument.spread * 0.5)
+        let entryPx = orderMode == .market ? marketPx : (pendingEntryPrice > 0 ? pendingEntryPrice : store.lastPrice)
+        return Button {
+            switch orderMode {
+            case .market: store.openSampleOrder(isBuy: isBuy)
+            case .limit:  store.placePendingOrder(kind: .limit, isBuy: isBuy, entryPrice: entryPx)
+            case .stop:   store.placePendingOrder(kind: .stop, isBuy: isBuy, entryPrice: entryPx)
+            }
+        } label: {
+            VStack(spacing: 2) {
+                Text(title).font(.system(size: 10.5, weight: .black))
+                Text(store.instrument.formatPrice(entryPx))
+                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(color, in: RoundedRectangle(cornerRadius: 9))
+            .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
     }
 
     private func formatUSD(_ value: Double) -> String {

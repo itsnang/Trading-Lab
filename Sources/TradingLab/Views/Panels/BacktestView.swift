@@ -18,6 +18,10 @@ struct BacktestView: View {
                         .foregroundStyle(t.secondaryText)
                 }
                 Spacer()
+                Toggle("Partial TP @ 1R + Breakeven", isOn: $store.strategyConfig.partialTakeProfit)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .padding(.trailing, 10)
                 Toggle("Plot Signals on Chart", isOn: $store.showBacktestSignalsOnChart)
                     .toggleStyle(.switch)
                     .controlSize(.small)

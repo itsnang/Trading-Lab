@@ -40,6 +40,7 @@ struct WorkspacePrefs: Codable {
     var orderTakeProfitPips: Double = 80.0
     var sampleBalance: Double = 10_000.0
     var samplePositions: [SamplePosition] = []
+    var paperPendingOrders: [PaperPendingOrder] = []
 
     init() {}
 
@@ -62,7 +63,8 @@ struct WorkspacePrefs: Codable {
         orderStopPips: Double,
         orderTakeProfitPips: Double,
         sampleBalance: Double,
-        samplePositions: [SamplePosition]
+        samplePositions: [SamplePosition],
+        paperPendingOrders: [PaperPendingOrder] = []
     ) {
         self.isDarkTheme = isDarkTheme
         self.activeStudies = activeStudies
@@ -83,6 +85,7 @@ struct WorkspacePrefs: Codable {
         self.orderTakeProfitPips = orderTakeProfitPips
         self.sampleBalance = sampleBalance
         self.samplePositions = samplePositions
+        self.paperPendingOrders = paperPendingOrders
     }
 
     /// Backwards-compatible decoding so new settings never wipe your saved preferences.
@@ -108,6 +111,7 @@ struct WorkspacePrefs: Codable {
         orderTakeProfitPips = try c.decodeIfPresent(Double.self, forKey: .orderTakeProfitPips) ?? d.orderTakeProfitPips
         sampleBalance = try c.decodeIfPresent(Double.self, forKey: .sampleBalance) ?? d.sampleBalance
         samplePositions = try c.decodeIfPresent([SamplePosition].self, forKey: .samplePositions) ?? d.samplePositions
+        paperPendingOrders = try c.decodeIfPresent([PaperPendingOrder].self, forKey: .paperPendingOrders) ?? d.paperPendingOrders
     }
 }
 
