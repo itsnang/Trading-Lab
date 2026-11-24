@@ -87,7 +87,7 @@ final class WorkspaceStore: ObservableObject {
             saveWorkspacePrefs()
         }
     }
-    @Published private(set) var computed = ComputedIndicators()
+    @Published var computed = ComputedIndicators()
     @Published var showBacktestSignalsOnChart: Bool = false {
         didSet { saveWorkspacePrefs() }
     }
@@ -101,9 +101,22 @@ final class WorkspaceStore: ObservableObject {
     @Published var settingsStudyKind: StudyKind? = nil
     @Published var alertStudyKind: StudyKind? = nil
 
-    // Live Price Alerts
+    // Live Price & Study Suite Signal Alerts
     @Published var alerts: [PriceAlert] = []
     @Published var triggeredAlertBanner: PriceAlert? = nil
+    @Published var recentSignalAlerts: [SignalAlertEvent] = []
+    @Published var triggeredSignalBanner: SignalAlertEvent? = nil
+    @Published var signalAlertsEnabled: Bool = true { didSet { saveWorkspacePrefs() } }
+    @Published var zoneTouchAlertsEnabled: Bool = true { didSet { saveWorkspacePrefs() } }
+    @Published var macOSNotificationsEnabled: Bool = true {
+        didSet {
+            saveWorkspacePrefs()
+            if macOSNotificationsEnabled && !isBootstrapping {
+                notifications.requestAuthorizationIfNeeded()
+            }
+        }
+    }
+    @Published var soundAlertsEnabled: Bool = true { didSet { saveWorkspacePrefs() } }
 
     // Drawing tools & persisted per-instrument drawings
     @Published var activeTool: DrawingTool = .cursor
@@ -158,6 +171,9 @@ final class WorkspaceStore: ObservableObject {
 
     private let liveService: MarketDataAdapter
     private let persistence: PersistenceAdapter
+    private let notifications: NotificationAdapter
+    private var firedSignalKeys: Set<String> = []
+    private var isAlertBaselineSeeded: Bool = false
     private var loadTask: Task<Void, Never>?
     private var backfillTask: Task<Void, Never>?
     private var isBackfillingHistory: Bool = false
@@ -258,10 +274,12 @@ final class WorkspaceStore: ObservableObject {
         initialCandles: [Candle]? = nil,
         marketService: MarketDataAdapter = LiveMarketService(),
         persistence: PersistenceAdapter = DiskPersistenceAdapter(),
+        notifications: NotificationAdapter = MacOSNotificationAdapter(),
         startTimers: Bool = true
     ) {
         self.liveService = marketService
         self.persistence = persistence
+        self.notifications = notifications
         self.isEphemeralPreview = ephemeralPreview
         if ephemeralPreview {
             self.instrument = .paxg
@@ -299,9 +317,16 @@ final class WorkspaceStore: ObservableObject {
             self.sampleBalance = prefs.sampleBalance
             self.samplePositions = prefs.samplePositions
             self.paperPendingOrders = prefs.paperPendingOrders
+            self.signalAlertsEnabled = prefs.signalAlertsEnabled
+            self.zoneTouchAlertsEnabled = prefs.zoneTouchAlertsEnabled
+            self.macOSNotificationsEnabled = prefs.macOSNotificationsEnabled
+            self.soundAlertsEnabled = prefs.soundAlertsEnabled
         }
         self.isBootstrapping = false
         if startTimers {
+            if macOSNotificationsEnabled {
+                notifications.requestAuthorizationIfNeeded()
+            }
             NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     self?.saveWorkspacePrefs()
@@ -369,7 +394,11 @@ final class WorkspaceStore: ObservableObject {
             orderTakeProfitPips: orderTakeProfitPips,
             sampleBalance: sampleBalance,
             samplePositions: samplePositions,
-            paperPendingOrders: paperPendingOrders
+            paperPendingOrders: paperPendingOrders,
+            signalAlertsEnabled: signalAlertsEnabled,
+            zoneTouchAlertsEnabled: zoneTouchAlertsEnabled,
+            macOSNotificationsEnabled: macOSNotificationsEnabled,
+            soundAlertsEnabled: soundAlertsEnabled
         ))
     }
 
@@ -400,11 +429,276 @@ final class WorkspaceStore: ObservableObject {
             if hit {
                 alerts[i].isTriggered = true
                 triggeredAlertBanner = alerts[i]
-                NSSound.beep()
+                if soundAlertsEnabled { NSSound.beep() }
+                if macOSNotificationsEnabled {
+                    let dir = alerts[i].isAbove ? "crossed above" : "crossed below"
+                    notifications.deliver(
+                        title: "\(alerts[i].instrument) Price Alert",
+                        body: "\(dir) \(instrument.formatPrice(alerts[i].targetPrice)) — \(alerts[i].note)",
+                        sound: soundAlertsEnabled
+                    )
+                }
                 changed = true
             }
         }
         if changed { persistence.saveAlerts(alerts) }
+    }
+
+    // MARK: - Confirmed Study Suite & Early Zone-Touch Signal Alerts
+
+    private func barKey(_ index: Int) -> String {
+        guard allCandles.indices.contains(index) else { return "\(index)" }
+        return "\(Int(allCandles[index].timestamp.timeIntervalSince1970))"
+    }
+
+    /// Records all existing historical signals into `firedSignalKeys` so loading history,
+    /// switching symbols/timeframes, or reconnecting never fires retroactive alerts.
+    private func seedSignalAlertBaseline() {
+        let prefix = "\(instrument.rawValue):\(timeframe.rawValue):"
+        for sig in computed.reversalSignals {
+            firedSignalKeys.insert("\(prefix)REV:\(sig.isBullish ? "BUY" : "SELL"):\(barKey(sig.index))")
+        }
+        for br in computed.structureBreaks {
+            firedSignalKeys.insert("\(prefix)STRUCT:\(br.label):\(barKey(br.index))")
+        }
+        for acc in computed.accelerators {
+            firedSignalKeys.insert("\(prefix)FLOW:\(acc.caption):\(barKey(acc.index))")
+        }
+        for sz in computed.scalpZones {
+            firedSignalKeys.insert("\(prefix)SCALP:\(barKey(sz.startIndex))")
+        }
+        for tr in backtestReport.trades {
+            firedSignalKeys.insert("\(prefix)STRAT:\(tr.isBuy ? "BUY" : "SELL"):\(barKey(tr.entryIndex))")
+        }
+        if allCandles.count >= 2 {
+            let confirmedIdx = allCandles.count - 2
+            firedSignalKeys.insert("\(prefix)WT:BULL:\(barKey(confirmedIdx))")
+            firedSignalKeys.insert("\(prefix)WT:BEAR:\(barKey(confirmedIdx))")
+        }
+        isAlertBaselineSeeded = true
+    }
+
+    func evaluateStudySignalAlerts(currentPrice: Double) {
+        guard isAlertBaselineSeeded, !isReplayMode, allCandles.count >= 3 else { return }
+        let confirmedIdx = allCandles.count - 2
+        let lastIdx = allCandles.count - 1
+        let prefix = "\(instrument.rawValue):\(timeframe.rawValue):"
+        let fmt: (Double) -> String = { self.instrument.formatPrice($0) }
+
+        var newEvents: [SignalAlertEvent] = []
+
+        if signalAlertsEnabled {
+            // 1. Reversal & ATR Targets (BUY / SELL with exact ENTRY / SL / TP1 / TP2 / TP3)
+            if isStudyVisible(.reversalTargets) {
+                for sig in computed.reversalSignals where sig.index == confirmedIdx {
+                    let dir = sig.isBullish ? "BUY" : "SELL"
+                    let key = "\(prefix)REV:\(dir):\(barKey(sig.index))"
+                    guard !firedSignalKeys.contains(key) else { continue }
+                    newEvents.append(SignalAlertEvent(
+                        id: UUID(),
+                        dedupeKey: key,
+                        instrument: instrument.rawValue,
+                        timeframe: timeframe.rawValue,
+                        category: "\(dir) Signal",
+                        title: "\(instrument.rawValue) (\(timeframe.rawValue)) \(dir) Signal",
+                        body: "ENTRY \(fmt(sig.entry)) · SL \(fmt(sig.stopLoss)) · TP1 \(fmt(sig.tp1)) · TP2 \(fmt(sig.tp2)) · TP3 \(fmt(sig.tp3))",
+                        isBullish: sig.isBullish,
+                        timestamp: Date(),
+                        suggestedEntry: sig.entry,
+                        suggestedSL: sig.stopLoss,
+                        suggestedTP: sig.tp2
+                    ))
+                }
+            }
+
+            // 2. Market Structure Breaks (CHoCH / BOS+)
+            if isStudyVisible(.concept) {
+                for br in computed.structureBreaks where br.index == confirmedIdx && (br.label.contains("CHoCH") || br.label.contains("+")) {
+                    let key = "\(prefix)STRUCT:\(br.label):\(barKey(br.index))"
+                    guard !firedSignalKeys.contains(key) else { continue }
+                    newEvents.append(SignalAlertEvent(
+                        id: UUID(),
+                        dedupeKey: key,
+                        instrument: instrument.rawValue,
+                        timeframe: timeframe.rawValue,
+                        category: "Structure",
+                        title: "\(instrument.rawValue) (\(timeframe.rawValue)) \(br.label)",
+                        body: "\(br.isBullish ? "Bullish" : "Bearish") structure break confirmed at \(fmt(br.price))",
+                        isBullish: br.isBullish,
+                        timestamp: Date(),
+                        suggestedEntry: nil,
+                        suggestedSL: nil,
+                        suggestedTP: nil
+                    ))
+                }
+            }
+
+            // 3. Order Flow Impulse (BuAx+ / BeAx+)
+            if isStudyVisible(.orderFlow) {
+                for acc in computed.accelerators where acc.index == confirmedIdx && acc.isPlus {
+                    let key = "\(prefix)FLOW:\(acc.caption):\(barKey(acc.index))"
+                    guard !firedSignalKeys.contains(key) else { continue }
+                    newEvents.append(SignalAlertEvent(
+                        id: UUID(),
+                        dedupeKey: key,
+                        instrument: instrument.rawValue,
+                        timeframe: timeframe.rawValue,
+                        category: "Order Flow",
+                        title: "\(instrument.rawValue) (\(timeframe.rawValue)) \(acc.caption)",
+                        body: "\(acc.isBullish ? "Bullish" : "Bearish") order-flow impulse confirmed at \(fmt(allCandles[confirmedIdx].close))",
+                        isBullish: acc.isBullish,
+                        timestamp: Date(),
+                        suggestedEntry: nil,
+                        suggestedSL: nil,
+                        suggestedTP: nil
+                    ))
+                }
+            }
+
+            // 4. WaveTrend Oversold / Overbought Crossover
+            if isStudyVisible(.momentumOscillator),
+               confirmedIdx > 0,
+               confirmedIdx < computed.waveTrend.count,
+               let cur = computed.waveTrend[confirmedIdx],
+               let prev = computed.waveTrend[confirmedIdx - 1] {
+                if prev.wt1 <= prev.wt2 && cur.wt1 > cur.wt2 && cur.wt1 < -45.0 {
+                    let key = "\(prefix)WT:BULL:\(barKey(confirmedIdx))"
+                    if !firedSignalKeys.contains(key) {
+                        newEvents.append(SignalAlertEvent(
+                            id: UUID(),
+                            dedupeKey: key,
+                            instrument: instrument.rawValue,
+                            timeframe: timeframe.rawValue,
+                            category: "WaveTrend",
+                            title: "\(instrument.rawValue) (\(timeframe.rawValue)) WaveTrend Bull Cross",
+                            body: String(format: "Oversold WT cross (%.1f) at %@", cur.wt1, fmt(allCandles[confirmedIdx].close)),
+                            isBullish: true,
+                            timestamp: Date(),
+                            suggestedEntry: nil,
+                            suggestedSL: nil,
+                            suggestedTP: nil
+                        ))
+                    }
+                } else if prev.wt1 >= prev.wt2 && cur.wt1 < cur.wt2 && cur.wt1 > 45.0 {
+                    let key = "\(prefix)WT:BEAR:\(barKey(confirmedIdx))"
+                    if !firedSignalKeys.contains(key) {
+                        newEvents.append(SignalAlertEvent(
+                            id: UUID(),
+                            dedupeKey: key,
+                            instrument: instrument.rawValue,
+                            timeframe: timeframe.rawValue,
+                            category: "WaveTrend",
+                            title: "\(instrument.rawValue) (\(timeframe.rawValue)) WaveTrend Bear Cross",
+                            body: String(format: "Overbought WT cross (%.1f) at %@", cur.wt1, fmt(allCandles[confirmedIdx].close)),
+                            isBullish: false,
+                            timestamp: Date(),
+                            suggestedEntry: nil,
+                            suggestedSL: nil,
+                            suggestedTP: nil
+                        ))
+                    }
+                }
+            }
+
+            // 5. 4-Stage Strategy Engine Confirmed Entry
+            if showBacktestSignalsOnChart {
+                for tr in backtestReport.trades where tr.entryIndex == confirmedIdx {
+                    let dir = tr.isBuy ? "BUY" : "SELL"
+                    let key = "\(prefix)STRAT:\(dir):\(barKey(tr.entryIndex))"
+                    guard !firedSignalKeys.contains(key) else { continue }
+                    newEvents.append(SignalAlertEvent(
+                        id: UUID(),
+                        dedupeKey: key,
+                        instrument: instrument.rawValue,
+                        timeframe: timeframe.rawValue,
+                        category: "Strategy Engine",
+                        title: "\(instrument.rawValue) (\(timeframe.rawValue)) 4-Stage \(dir)",
+                        body: "ENTRY \(fmt(tr.entryPrice)) · SL \(fmt(tr.stopLoss)) · TP \(fmt(tr.takeProfit))",
+                        isBullish: tr.isBuy,
+                        timestamp: Date(),
+                        suggestedEntry: tr.entryPrice,
+                        suggestedSL: tr.stopLoss,
+                        suggestedTP: tr.takeProfit
+                    ))
+                }
+            }
+        }
+
+        // 6. Early Pre-Run Zone-Touch Alerts (active unmitigated Order Block & unfilled FVG)
+        if zoneTouchAlertsEnabled {
+            let liveBarTag = barKey(lastIdx)
+            if isStudyVisible(.concept) {
+                for ob in computed.orderBlocks where !ob.mitigated && ob.startIndex < lastIdx {
+                    if currentPrice >= ob.bottom && currentPrice <= ob.top {
+                        let key = "\(prefix)ZONE_OB:\(ob.startIndex):\(liveBarTag)"
+                        guard !firedSignalKeys.contains(key) else { continue }
+                        newEvents.append(SignalAlertEvent(
+                            id: UUID(),
+                            dedupeKey: key,
+                            instrument: instrument.rawValue,
+                            timeframe: timeframe.rawValue,
+                            category: "Zone Touch",
+                            title: "\(instrument.rawValue) Tapped \(ob.isBullish ? "Bullish" : "Bearish") Order Block",
+                            body: "Early setup watch at \(fmt(currentPrice)) (Zone \(fmt(ob.bottom))–\(fmt(ob.top)))",
+                            isBullish: ob.isBullish,
+                            timestamp: Date(),
+                            suggestedEntry: nil,
+                            suggestedSL: nil,
+                            suggestedTP: nil
+                        ))
+                    }
+                }
+            }
+            if isStudyVisible(.orderFlow) {
+                for fvg in computed.fvgs where !fvg.filled && fvg.startIndex < lastIdx {
+                    if currentPrice >= fvg.bottom && currentPrice <= fvg.top {
+                        let key = "\(prefix)ZONE_FVG:\(fvg.startIndex):\(liveBarTag)"
+                        guard !firedSignalKeys.contains(key) else { continue }
+                        newEvents.append(SignalAlertEvent(
+                            id: UUID(),
+                            dedupeKey: key,
+                            instrument: instrument.rawValue,
+                            timeframe: timeframe.rawValue,
+                            category: "Zone Touch",
+                            title: "\(instrument.rawValue) Tapped \(fvg.isBullish ? "Bullish" : "Bearish") FVG",
+                            body: "Early imbalance retest at \(fmt(currentPrice)) (FVG \(fmt(fvg.bottom))–\(fmt(fvg.top)))",
+                            isBullish: fvg.isBullish,
+                            timestamp: Date(),
+                            suggestedEntry: nil,
+                            suggestedSL: nil,
+                            suggestedTP: nil
+                        ))
+                    }
+                }
+            }
+        }
+
+        guard !newEvents.isEmpty else { return }
+        for ev in newEvents {
+            firedSignalKeys.insert(ev.dedupeKey)
+            recentSignalAlerts.insert(ev, at: 0)
+            triggeredSignalBanner = ev
+            if macOSNotificationsEnabled {
+                notifications.deliver(title: ev.title, body: ev.body, sound: soundAlertsEnabled)
+            }
+        }
+        if recentSignalAlerts.count > 25 {
+            recentSignalAlerts.removeLast(recentSignalAlerts.count - 25)
+        }
+        if soundAlertsEnabled {
+            NSSound.beep()
+        }
+    }
+
+    /// Copies a signal's suggested SL and TP distances (in pips) straight into the Paper Desk order ticket.
+    func applySignalTargetsToOrderTicket(_ event: SignalAlertEvent) {
+        guard let entry = event.suggestedEntry,
+              let sl = event.suggestedSL,
+              let tp = event.suggestedTP else { return }
+        let pip = max(instrument.pipSize, 1e-6)
+        orderStopPips = max(1.0, (abs(entry - sl) / pip).rounded())
+        orderTakeProfitPips = max(1.0, (abs(tp - entry) / pip).rounded())
+        showTradeDrawer = true
     }
 
     // MARK: - Market Loading (LIVE + SAMPLE)
@@ -429,6 +723,7 @@ final class WorkspaceStore: ObservableObject {
         rightOffsetBars = 6.0
         isAutoPriceScale = true
         spotBasisOffset = 0.0
+        isAlertBaselineSeeded = false
 
         let selectedInstrument = instrument
         let selectedTimeframe = timeframe
@@ -465,6 +760,7 @@ final class WorkspaceStore: ObservableObject {
                 self.allCandles = loadedCandles
                 self.replayIndex = max(60, loadedCandles.count - 55)
                 self.recomputeIndicators()
+                self.seedSignalAlertBaseline()
 
                 if let binSym = selectedInstrument.binanceSymbol, res.provider == "Binance" {
                     self.startLiveBinanceStream(symbol: binSym, interval: selectedTimeframe.binanceInterval)
@@ -594,6 +890,8 @@ final class WorkspaceStore: ObservableObject {
                         ? Self.shiftCandles(gap.candles, by: self.spotBasisOffset)
                         : gap.candles
                     self.mergeTailCandles(gapCandles)
+                    self.recomputeIndicators()
+                    self.seedSignalAlertBaseline()
                 }
                 self.startLiveBinanceStream(symbol: symbol, interval: interval)
             }
@@ -678,6 +976,7 @@ final class WorkspaceStore: ObservableObject {
         if let latest = allCandles.last {
             recomputeIndicators()
             evaluateAlerts(currentPrice: price)
+            evaluateStudySignalAlerts(currentPrice: price)
             evaluatePaperDeskExecution(barLow: latest.low, barHigh: latest.high, currentPrice: price)
         }
     }
@@ -697,6 +996,7 @@ final class WorkspaceStore: ObservableObject {
                     self.mergeTailCandles(tail)
                     self.recomputeIndicators()
                     self.evaluateAlerts(currentPrice: self.lastPrice)
+                    self.evaluateStudySignalAlerts(currentPrice: self.lastPrice)
                     if let latest = self.allCandles.last {
                         self.evaluatePaperDeskExecution(barLow: latest.low, barHigh: latest.high, currentPrice: latest.close)
                     }
@@ -792,6 +1092,7 @@ final class WorkspaceStore: ObservableObject {
         }
         recomputeIndicators()
         evaluateAlerts(currentPrice: c)
+        evaluateStudySignalAlerts(currentPrice: c)
         evaluatePaperDeskExecution(barLow: l, barHigh: h, currentPrice: c)
     }
 

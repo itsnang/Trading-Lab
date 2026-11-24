@@ -241,6 +241,21 @@ struct PriceAlert: Identifiable, Codable, Equatable {
     var createdAt: Date = Date()
 }
 
+struct SignalAlertEvent: Identifiable, Equatable {
+    let id: UUID
+    let dedupeKey: String
+    let instrument: String
+    let timeframe: String
+    let category: String
+    let title: String
+    let body: String
+    let isBullish: Bool
+    let timestamp: Date
+    let suggestedEntry: Double?
+    let suggestedSL: Double?
+    let suggestedTP: Double?
+}
+
 struct OrderBlockZone: Identifiable {
     let id: Int
     let startIndex: Int

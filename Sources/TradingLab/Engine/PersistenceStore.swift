@@ -41,6 +41,12 @@ struct WorkspacePrefs: Codable {
     var samplePositions: [SamplePosition] = []
     var paperPendingOrders: [PaperPendingOrder] = []
 
+    // Signal & Notification Alert Preferences
+    var signalAlertsEnabled: Bool = true
+    var zoneTouchAlertsEnabled: Bool = true
+    var macOSNotificationsEnabled: Bool = true
+    var soundAlertsEnabled: Bool = true
+
     init() {}
 
     init(
@@ -62,7 +68,11 @@ struct WorkspacePrefs: Codable {
         orderTakeProfitPips: Double,
         sampleBalance: Double,
         samplePositions: [SamplePosition],
-        paperPendingOrders: [PaperPendingOrder] = []
+        paperPendingOrders: [PaperPendingOrder] = [],
+        signalAlertsEnabled: Bool = true,
+        zoneTouchAlertsEnabled: Bool = true,
+        macOSNotificationsEnabled: Bool = true,
+        soundAlertsEnabled: Bool = true
     ) {
         self.isDarkTheme = isDarkTheme
         self.activeStudies = activeStudies
@@ -83,6 +93,10 @@ struct WorkspacePrefs: Codable {
         self.sampleBalance = sampleBalance
         self.samplePositions = samplePositions
         self.paperPendingOrders = paperPendingOrders
+        self.signalAlertsEnabled = signalAlertsEnabled
+        self.zoneTouchAlertsEnabled = zoneTouchAlertsEnabled
+        self.macOSNotificationsEnabled = macOSNotificationsEnabled
+        self.soundAlertsEnabled = soundAlertsEnabled
     }
 
     /// Backwards-compatible decoding so new settings never wipe your saved preferences.
@@ -108,6 +122,10 @@ struct WorkspacePrefs: Codable {
         sampleBalance = try c.decodeIfPresent(Double.self, forKey: .sampleBalance) ?? d.sampleBalance
         samplePositions = try c.decodeIfPresent([SamplePosition].self, forKey: .samplePositions) ?? d.samplePositions
         paperPendingOrders = try c.decodeIfPresent([PaperPendingOrder].self, forKey: .paperPendingOrders) ?? d.paperPendingOrders
+        signalAlertsEnabled = try c.decodeIfPresent(Bool.self, forKey: .signalAlertsEnabled) ?? d.signalAlertsEnabled
+        zoneTouchAlertsEnabled = try c.decodeIfPresent(Bool.self, forKey: .zoneTouchAlertsEnabled) ?? d.zoneTouchAlertsEnabled
+        macOSNotificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .macOSNotificationsEnabled) ?? d.macOSNotificationsEnabled
+        soundAlertsEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundAlertsEnabled) ?? d.soundAlertsEnabled
     }
 }
 

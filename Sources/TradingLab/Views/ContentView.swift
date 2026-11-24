@@ -56,6 +56,47 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
                 .padding(.top, 56)
                 .transition(.move(edge: .top).combined(with: .opacity))
+            } else if let sig = store.triggeredSignalBanner {
+                HStack(spacing: 10) {
+                    Image(systemName: sig.category == "Zone Touch" ? "scope" : "bolt.fill")
+                        .foregroundStyle(.white)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(sig.title)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                        Text(sig.body)
+                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+                    }
+                    if sig.suggestedSL != nil && sig.suggestedTP != nil {
+                        Button("Apply SL/TP") {
+                            store.applySignalTargetsToOrderTicket(sig)
+                            store.triggeredSignalBanner = nil
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(Color.white, in: Capsule())
+                        .foregroundStyle(sig.isBullish ? t.bull : t.bear)
+                    }
+                    Button("Dismiss") {
+                        store.triggeredSignalBanner = nil
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.22), in: Capsule())
+                    .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 15)
+                .padding(.vertical, 9)
+                .background(sig.category == "Zone Touch" ? t.amber : (sig.isBullish ? t.bull : t.bear), in: Capsule())
+                .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+                .padding(.top, 56)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .frame(minWidth: 960, minHeight: 640)

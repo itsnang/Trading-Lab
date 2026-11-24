@@ -121,9 +121,30 @@ struct IndicatorDrawerView: View {
                     }
                 }
 
-                // 3. Active Price Alerts
-                panelCard(title: "PRICE ALERTS (\(store.alerts.count))", theme: t) {
+                // 3. Auto Signal Alerts & Price Alerts
+                panelCard(title: "SIGNAL & PRICE ALERTS (\(store.alerts.count + store.recentSignalAlerts.count))", theme: t) {
                     VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Confirmed Study Signals", isOn: $store.signalAlertsEnabled)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(.system(size: 11, weight: .medium))
+                        Toggle("Early OB / FVG Zone Touch", isOn: $store.zoneTouchAlertsEnabled)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(.system(size: 11, weight: .medium))
+                        HStack(spacing: 12) {
+                            Toggle("macOS Banner", isOn: $store.macOSNotificationsEnabled)
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                                .font(.system(size: 10.5, weight: .medium))
+                            Toggle("Sound", isOn: $store.soundAlertsEnabled)
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                                .font(.system(size: 10.5, weight: .medium))
+                        }
+
+                        Divider().overlay(t.border)
+
                         Button {
                             store.alertStudyKind = .concept
                         } label: {
@@ -132,6 +153,40 @@ struct IndicatorDrawerView: View {
                                 .foregroundStyle(t.accent)
                         }
                         .buttonStyle(.plain)
+
+                        if !store.recentSignalAlerts.isEmpty {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("RECENT SIGNALS")
+                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(t.secondaryText)
+                                ForEach(store.recentSignalAlerts.prefix(4)) { ev in
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(ev.category == "Zone Touch" ? t.amber : (ev.isBullish ? t.bull : t.bear))
+                                            .frame(width: 6, height: 6)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(ev.title)
+                                                .font(.system(size: 10.5, weight: .semibold))
+                                                .foregroundStyle(t.primaryText)
+                                                .lineLimit(1)
+                                            Text(ev.body)
+                                                .font(.system(size: 9.5, design: .monospaced))
+                                                .foregroundStyle(t.secondaryText)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        if ev.suggestedSL != nil && ev.suggestedTP != nil {
+                                            Button("Use") {
+                                                store.applySignalTargetsToOrderTicket(ev)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .font(.system(size: 9.5, weight: .bold))
+                                            .foregroundStyle(t.accent)
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         ForEach(store.alerts.prefix(6)) { al in
                             HStack(spacing: 6) {

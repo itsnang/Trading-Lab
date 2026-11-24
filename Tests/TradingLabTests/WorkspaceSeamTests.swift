@@ -1,6 +1,21 @@
 import XCTest
 @testable import TradingLabCore
 
+final class FakeNotificationAdapter: NotificationAdapter {
+    struct Delivered: Equatable {
+        let title: String
+        let body: String
+        let sound: Bool
+    }
+    var authRequests = 0
+    var delivered: [Delivered] = []
+
+    func requestAuthorizationIfNeeded() { authRequests += 1 }
+    func deliver(title: String, body: String, sound: Bool) {
+        delivered.append(Delivered(title: title, body: body, sound: sound))
+    }
+}
+
 final class InMemoryPersistenceAdapter: PersistenceAdapter {
     var prefs: WorkspacePrefs?
     var drawings: [Instrument: [DrawingObject]] = [:]
@@ -501,5 +516,100 @@ final class WorkspaceSeamTests: XCTestCase {
 
         // Historical candles must be shifted into Spot XAU/USD price space so last close matches Spot seamlessly
         XCTAssertEqual(store.allCandles.last?.close ?? 0, 3616.90, accuracy: 0.01)
+    }
+
+    func testStudySuiteSignalAlertsNeverFireRetroactivelyAndDeduplicatePerBar() async {
+        let fakeMarket = FakeMarketDataAdapter()
+        let memory = InMemoryPersistenceAdapter()
+        let fakeNotif = FakeNotificationAdapter()
+        let store = WorkspaceStore(
+            marketService: fakeMarket,
+            persistence: memory,
+            notifications: fakeNotif,
+            startTimers: false
+        )
+        store.addStudy(.reversalTargets)
+        store.reloadMarket()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        // 1. Loading history must NEVER fire retroactive alerts
+        XCTAssertEqual(fakeNotif.delivered.count, 0)
+        XCTAssertEqual(store.recentSignalAlerts.count, 0)
+
+        // 2. Confirmed reversal signal on the most recently closed bar (count - 2) fires ONCE with ENTRY/SL/TP
+        let confirmedIdx = store.allCandles.count - 2
+        let sig = ReversalSetupSignal(
+            id: 99,
+            index: confirmedIdx,
+            isBullish: true,
+            entry: 2650.00,
+            stopLoss: 2645.00,
+            tp1: 2655.00,
+            tp2: 2660.00,
+            tp3: 2665.00
+        )
+        store.computed.reversalSignals.append(sig)
+        store.evaluateStudySignalAlerts(currentPrice: 2651.00)
+
+        XCTAssertEqual(fakeNotif.delivered.count, 1)
+        XCTAssertTrue(fakeNotif.delivered[0].title.contains("BUY"))
+        XCTAssertTrue(fakeNotif.delivered[0].body.contains("SL"))
+        XCTAssertTrue(fakeNotif.delivered[0].body.contains("TP1"))
+        XCTAssertTrue(fakeNotif.delivered[0].body.contains("TP2"))
+        XCTAssertEqual(store.recentSignalAlerts.count, 1)
+        XCTAssertNotNil(store.triggeredSignalBanner)
+
+        // 3. Re-evaluating on subsequent live ticks in the same bar must NOT duplicate the alert
+        store.evaluateStudySignalAlerts(currentPrice: 2652.00)
+        store.evaluateStudySignalAlerts(currentPrice: 2653.00)
+        XCTAssertEqual(fakeNotif.delivered.count, 1)
+        XCTAssertEqual(store.recentSignalAlerts.count, 1)
+
+        // 4. One-click Apply SL/TP copies the signal's SL & TP2 distances (in pips) into Paper Desk ticket
+        if let banner = store.triggeredSignalBanner {
+            store.applySignalTargetsToOrderTicket(banner)
+            XCTAssertEqual(store.orderStopPips, 50.0, accuracy: 0.5)
+            XCTAssertEqual(store.orderTakeProfitPips, 100.0, accuracy: 0.5)
+        }
+    }
+
+    func testEarlyZoneTouchAlertFiresOnceWhenPriceTapsUnmitigatedOrderBlockOrFVG() async {
+        let fakeMarket = FakeMarketDataAdapter()
+        let memory = InMemoryPersistenceAdapter()
+        let fakeNotif = FakeNotificationAdapter()
+        let store = WorkspaceStore(
+            marketService: fakeMarket,
+            persistence: memory,
+            notifications: fakeNotif,
+            startTimers: false
+        )
+        store.addStudy(.concept)
+        store.addStudy(.orderFlow)
+        store.reloadMarket()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let lastIdx = store.allCandles.count - 1
+        // Seed an unmitigated OB and unfilled FVG below current price (outside current bar)
+        store.computed.orderBlocks = [
+            OrderBlockZone(id: 1, startIndex: max(0, lastIdx - 10), endIndex: lastIdx, top: 2635.0, bottom: 2630.0, isBullish: true, mitigated: false, pressurePercent: 78.0, isSwing: true)
+        ]
+        store.computed.fvgs = [
+            FairValueGap(id: 1, startIndex: max(0, lastIdx - 6), top: 2643.0, bottom: 2640.0, isBullish: true, filled: false)
+        ]
+
+        // Price away from zones -> 0 alerts
+        store.evaluateStudySignalAlerts(currentPrice: 2660.0)
+        XCTAssertEqual(fakeNotif.delivered.count, 0)
+
+        // Price taps FVG -> 1 early zone-touch alert; second tick in same FVG -> no duplicate
+        store.evaluateStudySignalAlerts(currentPrice: 2641.5)
+        store.evaluateStudySignalAlerts(currentPrice: 2642.0)
+        XCTAssertEqual(fakeNotif.delivered.count, 1)
+        XCTAssertTrue(fakeNotif.delivered[0].title.contains("FVG"))
+
+        // Price taps Order Block -> 1 early OB zone-touch alert
+        store.evaluateStudySignalAlerts(currentPrice: 2632.0)
+        XCTAssertEqual(fakeNotif.delivered.count, 2)
+        XCTAssertTrue(fakeNotif.delivered[1].title.contains("Order Block"))
     }
 }

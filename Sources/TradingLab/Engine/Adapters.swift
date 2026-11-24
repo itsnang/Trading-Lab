@@ -1,4 +1,39 @@
 import Foundation
+import UserNotifications
+
+/// Injectable macOS notification seam so tests can assert notification delivery
+/// without invoking UNUserNotificationCenter outside an .app bundle.
+protocol NotificationAdapter: AnyObject {
+    func requestAuthorizationIfNeeded()
+    func deliver(title: String, body: String, sound: Bool)
+}
+
+final class MacOSNotificationAdapter: NotificationAdapter {
+    private var didRequestAuth = false
+
+    private var isAppBundle: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
+    }
+
+    func requestAuthorizationIfNeeded() {
+        guard isAppBundle, !didRequestAuth else { return }
+        didRequestAuth = true
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    func deliver(title: String, body: String, sound: Bool) {
+        guard isAppBundle else { return }
+        requestAuthorizationIfNeeded()
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if sound {
+            content.sound = .default
+        }
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+}
 
 /// Injectable market data seam allowing WorkspaceStore to run against live Binance/Yahoo
 /// feeds in production or deterministic in-memory fakes in automated tests.
