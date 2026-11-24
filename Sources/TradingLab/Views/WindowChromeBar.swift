@@ -29,8 +29,8 @@ struct WindowChromeBar: View {
         ZStack {
             WindowDragRegion()
 
-            HStack(spacing: 10) {
-                // Custom macOS traffic lights
+            HStack(spacing: 8) {
+                // Native-style macOS window controls
                 HStack(spacing: 7) {
                     CaptionDot(color: Color(red: 0.99, green: 0.37, blue: 0.34), symbol: "xmark", hover: isHoveringControls) {
                         NSApp.keyWindow?.performClose(nil)
@@ -43,166 +43,193 @@ struct WindowChromeBar: View {
                     }
                 }
                 .padding(.leading, 14)
+                .padding(.trailing, 4)
                 .onHover { isHoveringControls = $0 }
 
-                // Compact Brand Badge
-                HStack(spacing: 5) {
-                    MSNRLogoMark(isDark: t.isDark, showSacredGrid: false)
-                        .frame(width: 18, height: 18)
-                    Text("MSNR")
-                        .font(.system(size: 12, weight: .bold, design: .serif))
-                        .tracking(1.4)
-                        .foregroundStyle(t.primaryText)
-                }
-                .padding(.leading, 6)
-                .padding(.trailing, 2)
+                toolbarDivider(theme: t)
 
                 // Instrument Selector
                 Menu {
-                    Section("24/7 Live WebSocket + Order Flow (Binance)") {
-                        ForEach([Instrument.paxg, .btcusd, .ethusd]) { inst in
+                    Section("Real-Time WebSocket + Order Flow") {
+                        ForEach([Instrument.xauusd, .paxg, .btcusd, .ethusd]) { inst in
                             instrumentMenuButton(inst)
                         }
                     }
-                    Section("FX, Gold Futures & Indices (Yahoo Finance)") {
-                        ForEach([Instrument.xauusd, .eurusd, .us30, .nas100]) { inst in
+                    Section("FX & US Indices") {
+                        ForEach([Instrument.eurusd, .us30, .nas100]) { inst in
                             instrumentMenuButton(inst)
                         }
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Text(store.instrument.rawValue)
-                            .font(.system(size: 13, weight: .bold))
+                            .font(.system(size: 12.5, weight: .bold, design: .monospaced))
                             .foregroundStyle(t.primaryText)
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 9.5, weight: .bold))
+                            .font(.system(size: 8.5, weight: .bold))
                             .foregroundStyle(t.secondaryText)
                     }
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(t.border, lineWidth: 0.8))
+                    .background(t.softSurface.opacity(0.65), in: RoundedRectangle(cornerRadius: t.radiusControl))
+                    .overlay(RoundedRectangle(cornerRadius: t.radiusControl).stroke(t.border, lineWidth: 0.75))
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
 
-                // Timeframe Pills
-                HStack(spacing: 2) {
+                toolbarDivider(theme: t)
+
+                // Sharp Timeframe Strip (1..7 hotkeys)
+                HStack(spacing: 1) {
                     ForEach(Timeframe.allCases) { tf in
                         let selected = store.timeframe == tf
                         Button {
                             store.timeframe = tf
                         } label: {
                             Text(tf.rawValue)
-                                .font(.system(size: 11, weight: selected ? .bold : .medium))
-                                .foregroundStyle(selected ? .white : t.secondaryText)
-                                .padding(.horizontal, 7.5)
+                                .font(.system(size: 11, weight: selected ? .bold : .medium, design: .monospaced))
+                                .foregroundStyle(selected ? (t.isDark ? Color.black : .white) : t.secondaryText)
+                                .padding(.horizontal, 7)
                                 .padding(.vertical, 4)
-                                .background(selected ? t.accent : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                                .background(
+                                    selected ? t.accent : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: t.radiusSharp)
+                                )
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(2.5)
-                .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
+                .padding(2)
+                .background(t.softSurface.opacity(0.5), in: RoundedRectangle(cornerRadius: t.radiusControl))
 
-                // Prominent Indicators Library Button (matching screenshot workflow!)
+                toolbarDivider(theme: t)
+
+                // Study Suites Library Trigger
                 Button {
                     store.showIndicatorLibrary = true
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chart.bar.xaxis")
-                            .font(.system(size: 12.5, weight: .semibold))
-                        Text("Indicators")
-                            .font(.system(size: 12, weight: .semibold))
+                    HStack(spacing: 5) {
+                        Image(systemName: "slider.vertical.3")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Text("Studies")
+                            .font(.system(size: 11.5, weight: .semibold))
                         Text("\(store.activeStudies.count)")
-                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                            .padding(.horizontal, 5.5)
-                            .padding(.vertical, 1.5)
-                            .background(t.accent.opacity(0.16), in: Capsule())
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(t.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 3))
                     }
                     .foregroundStyle(t.accent)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5.5)
-                    .background(t.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(t.accent.opacity(0.25), lineWidth: 0.8))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(t.accent.opacity(t.isDark ? 0.11 : 0.08), in: RoundedRectangle(cornerRadius: t.radiusControl))
+                    .overlay(RoundedRectangle(cornerRadius: t.radiusControl).stroke(t.accent.opacity(0.28), lineWidth: 0.75))
                 }
                 .buttonStyle(.plain)
 
-                // Bar Replay Button
+                // Bar Replay Trigger
                 Button {
                     store.toggleReplayMode()
                 } label: {
-                    Label(store.isReplayMode ? "Replay On" : "Replay", systemImage: "gobackward")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(store.isReplayMode ? .white : t.primaryText)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5.5)
-                        .background(store.isReplayMode ? t.amber : t.softSurface, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(t.border, lineWidth: store.isReplayMode ? 0 : 0.8))
+                    HStack(spacing: 4) {
+                        Image(systemName: "gobackward")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(store.isReplayMode ? "Replay On" : "Replay")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(store.isReplayMode ? (t.isDark ? .black : .white) : t.primaryText)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        store.isReplayMode ? t.amber : Color.clear,
+                        in: RoundedRectangle(cornerRadius: t.radiusControl)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: t.radiusControl)
+                            .stroke(store.isReplayMode ? Color.clear : t.border, lineWidth: 0.75)
+                    )
                 }
                 .buttonStyle(.plain)
 
-                // Live Quote
-                HStack(spacing: 6) {
+                toolbarDivider(theme: t)
+
+                // Live Price Telemetry
+                HStack(spacing: 7) {
                     Text(store.instrument.formatPrice(store.lastPrice))
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
                         .foregroundStyle(t.primaryText)
                     let pct = store.priceChangePercent
                     Text(String(format: "%+.2f%%", pct))
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(pct >= 0 ? t.bull : t.bear)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background((pct >= 0 ? t.bull : t.bear).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4.5)
-                .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
 
                 Spacer()
 
-                // Feed / Session Status
+                // Live Feed Status
                 feedStatusPill(theme: t)
 
-                // Optional Trade & Order Flow Drawer Toggle
+                // Execution & Alerts Drawer Toggle
                 if store.activeSection == .terminal {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.16)) {
+                        withAnimation(.easeInOut(duration: 0.14)) {
                             store.showTradeDrawer.toggle()
                         }
                     } label: {
-                        Label("Trade", systemImage: "slider.horizontal.3")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(store.showTradeDrawer ? .white : t.primaryText)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5.5)
-                            .background(store.showTradeDrawer ? t.accent : t.softSurface, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(t.border, lineWidth: store.showTradeDrawer ? 0 : 0.8))
+                        HStack(spacing: 5) {
+                            Image(systemName: "sidebar.right")
+                                .font(.system(size: 11.5, weight: .semibold))
+                            Text("Desk")
+                                .font(.system(size: 11.5, weight: .semibold))
+                        }
+                        .foregroundStyle(store.showTradeDrawer ? (t.isDark ? .black : .white) : t.primaryText)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(
+                            store.showTradeDrawer ? t.accent : t.softSurface.opacity(0.6),
+                            in: RoundedRectangle(cornerRadius: t.radiusControl)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: t.radiusControl)
+                                .stroke(store.showTradeDrawer ? Color.clear : t.border, lineWidth: 0.75)
+                        )
                     }
                     .buttonStyle(.plain)
-                    .help("Toggle Paper Order Ticket, Risk Calculator & Order Flow Tape")
+                    .help("Toggle Paper Desk Order Ticket, Order Flow Tape & Signal Alerts")
                 }
 
-                // Light / Dark Mode Toggle
+                // Light / Dark Mode Switch
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
                         store.isDarkTheme.toggle()
                     }
                 } label: {
-                    Image(systemName: store.isDarkTheme ? "sun.max.fill" : "moon.fill")
+                    Image(systemName: store.isDarkTheme ? "sun.max" : "moon")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(t.secondaryText)
-                        .frame(width: 28, height: 28)
-                        .background(t.softSurface, in: RoundedRectangle(cornerRadius: 7))
+                        .frame(width: 28, height: 26)
+                        .background(t.softSurface.opacity(0.6), in: RoundedRectangle(cornerRadius: t.radiusControl))
+                        .overlay(RoundedRectangle(cornerRadius: t.radiusControl).stroke(t.border, lineWidth: 0.75))
                 }
                 .buttonStyle(.plain)
-                .help(store.isDarkTheme ? "Switch to Clean Light Theme" : "Switch to Dark Theme")
-                .padding(.trailing, 14)
+                .help(store.isDarkTheme ? "Switch to Alabaster Light Theme" : "Switch to Obsidian Dark Theme")
+                .padding(.trailing, 12)
             }
         }
-        .frame(height: 48)
+        .frame(height: 44)
         .background(t.chromeBg)
         .overlay(alignment: .bottom) {
             Rectangle().fill(t.border).frame(height: 1)
         }
+    }
+
+    private func toolbarDivider(theme t: AppTheme) -> some View {
+        Rectangle()
+            .fill(t.border)
+            .frame(width: 1, height: 16)
     }
 
     @ViewBuilder
@@ -225,29 +252,31 @@ struct WindowChromeBar: View {
             HStack(spacing: 5) {
                 switch store.liveFeedState {
                 case .streaming(let src):
-                    Circle().fill(t.bull).frame(width: 7, height: 7)
+                    Circle().fill(t.bull).frame(width: 6, height: 6)
                     Text("\(src) · Live").foregroundStyle(t.bull)
                 case .polling(let src):
-                    Circle().fill(store.marketStatus.isOpen ? t.bull : t.bear).frame(width: 7, height: 7)
+                    Circle().fill(store.marketStatus.isOpen ? t.bull : t.bear).frame(width: 6, height: 6)
                     Text(store.marketStatus.isOpen ? "\(src) · \(store.marketStatus.sessionLabel)" : "Closed · \(store.marketStatus.detailText)")
                         .foregroundStyle(store.marketStatus.isOpen ? t.primaryText : t.bear)
                 case .connecting(let src):
-                    Circle().fill(t.amber).frame(width: 7, height: 7)
+                    Circle().fill(t.amber).frame(width: 6, height: 6)
                     Text("Connecting \(src)...").foregroundStyle(t.amber)
                 case .error:
-                    Circle().fill(t.amber).frame(width: 7, height: 7)
+                    Circle().fill(t.amber).frame(width: 6, height: 6)
                     Text("Retry Feed").foregroundStyle(t.amber)
                 case .idle:
-                    Circle().fill(t.secondaryText).frame(width: 7, height: 7)
-                    Text("Idle").foregroundStyle(t.secondaryText)
+                    Circle().fill(t.secondaryText).frame(width: 6, height: 6)
+                    Text("Standby").foregroundStyle(t.secondaryText)
                 }
             }
-            .font(.system(size: 11, weight: .semibold))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
+            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4.5)
+            .background(t.softSurface.opacity(0.6), in: RoundedRectangle(cornerRadius: t.radiusControl))
+            .overlay(RoundedRectangle(cornerRadius: t.radiusControl).stroke(t.border, lineWidth: 0.75))
         }
         .buttonStyle(.plain)
+        .help("Click to reload live market feed")
     }
 }
 
@@ -260,11 +289,13 @@ private struct CaptionDot: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                Circle().fill(color).frame(width: 12, height: 12)
+                Circle()
+                    .fill(color)
+                    .frame(width: 11.5, height: 11.5)
                 if hover {
                     Image(systemName: symbol)
                         .font(.system(size: 6.5, weight: .black))
-                        .foregroundStyle(.black.opacity(0.65))
+                        .foregroundStyle(Color.black.opacity(0.65))
                 }
             }
         }

@@ -12,25 +12,25 @@ struct IndicatorLibraryView: View {
             // Sheet Header
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Indicators & Studies")
-                        .font(.system(size: 17, weight: .bold))
+                    Text("Study Suites")
+                        .font(.system(size: 16.5, weight: .bold))
                         .foregroundStyle(t.primaryText)
-                    Text("Add clean bundled indicator suites to your chart or fine-tune any study.")
-                        .font(.system(size: 12.5))
+                    Text("Toggle local indicator engines, adjust parameters, or configure alerts.")
+                        .font(.system(size: 12))
                         .foregroundStyle(t.secondaryText)
                 }
                 Spacer()
                 Button {
-                    withAnimation(.easeInOut(duration: 0.16)) {
+                    withAnimation(.easeInOut(duration: 0.14)) {
                         for k in StudyKind.allCases { store.addStudy(k) }
                     }
                 } label: {
-                    Text("Show All 6")
-                        .font(.system(size: 11.5, weight: .semibold))
+                    Text("Enable All 6")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundStyle(t.accent)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, 9)
                         .padding(.vertical, 5)
-                        .background(t.accent.opacity(0.10), in: Capsule())
+                        .background(t.accent.opacity(0.11), in: RoundedRectangle(cornerRadius: t.radiusSharp))
                 }
                 .buttonStyle(.plain)
 
@@ -38,73 +38,78 @@ struct IndicatorLibraryView: View {
                     dismiss()
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(t.secondaryText)
-                        .frame(width: 28, height: 28)
-                        .background(t.softSurface, in: Circle())
+                        .frame(width: 26, height: 26)
+                        .background(t.softSurface, in: RoundedRectangle(cornerRadius: t.radiusSharp))
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-            .background(t.cardBg)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(t.chromeBg)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(t.border).frame(height: 1)
             }
 
             ScrollView {
-                VStack(spacing: 12) {
-                    // Featured Strategy Setups Toggle Card
+                VStack(spacing: 10) {
+                    // Featured Strategy Setups Toggle Row
                     HStack(spacing: 14) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Strategy Setups Overlay")
-                                .font(.system(size: 14.5, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Strategy Engine Overlay")
+                                .font(.system(size: 13.5, weight: .semibold))
                                 .foregroundStyle(t.primaryText)
-                            Text("Show causal chart entry setups & R-multiple outcomes. Bot status stays unchanged.")
-                                .font(.system(size: 12.5))
+                            Text("Plot causal 4-stage entry setups & R-multiple outcomes directly on the chart.")
+                                .font(.system(size: 11.5))
                                 .foregroundStyle(t.secondaryText)
                         }
                         Spacer()
                         Toggle("", isOn: $store.showBacktestSignalsOnChart)
                             .toggleStyle(.switch)
+                            .controlSize(.small)
                             .labelsHidden()
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 16)
-                    .background(t.softSurface, in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(t.border, lineWidth: 1))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 13)
+                    .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusPanel))
+                    .overlay(RoundedRectangle(cornerRadius: t.radiusPanel).stroke(t.border, lineWidth: 1))
 
-                    // 6 Bundled Indicator Study Cards
-                    ForEach(StudyKind.allCases) { kind in
-                        studyCard(kind: kind, theme: t)
+                    // 6 Bundled Indicator Study Rows
+                    VStack(spacing: 0) {
+                        ForEach(Array(StudyKind.allCases.enumerated()), id: \.element.id) { idx, kind in
+                            studyCard(kind: kind, isLast: idx == StudyKind.allCases.count - 1, theme: t)
+                        }
                     }
+                    .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusPanel))
+                    .clipShape(RoundedRectangle(cornerRadius: t.radiusPanel))
+                    .overlay(RoundedRectangle(cornerRadius: t.radiusPanel).stroke(t.border, lineWidth: 1))
                 }
-                .padding(20)
+                .padding(18)
             }
         }
-        .frame(width: 560, height: 640)
+        .frame(width: 560, height: 680)
         .background(t.canvasBg)
     }
 
     @ViewBuilder
-    private func studyCard(kind: StudyKind, theme t: AppTheme) -> some View {
+    private func studyCard(kind: StudyKind, isLast: Bool, theme t: AppTheme) -> some View {
         let added = store.isStudyAdded(kind)
         let visible = store.isStudyVisible(kind)
 
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .center, spacing: 12) {
-                // Candlestick icon + Title & Description
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "chart.bar.xaxis")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(t.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(added ? (visible ? t.bull : t.amber) : t.border)
+                            .frame(width: 7, height: 7)
                         Text(kind.title)
-                            .font(.system(size: 14.5, weight: .semibold))
+                            .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(t.primaryText)
                     }
                     Text(kind.subtitle)
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(t.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -112,82 +117,68 @@ struct IndicatorLibraryView: View {
                 Spacer(minLength: 12)
 
                 if added {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 19, weight: .medium))
-                        .foregroundStyle(t.primaryText)
+                    Text(visible ? "ACTIVE" : "HIDDEN")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .tracking(0.6)
+                        .foregroundStyle(visible ? t.bull : t.amber)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background((visible ? t.bull : t.amber).opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
                 } else {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.16)) {
+                        withAnimation(.easeInOut(duration: 0.14)) {
                             store.addStudy(kind)
                         }
                     } label: {
                         Text("Add")
-                            .font(.system(size: 13.5, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .bold))
                             .foregroundStyle(t.accent)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(t.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 5)
+                            .background(t.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: t.radiusSharp))
+                            .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(t.accent.opacity(0.28), lineWidth: 0.75))
                     }
                     .buttonStyle(.plain)
                 }
             }
 
-            // Action row when study is on the chart
             if added {
-                HStack(spacing: 20) {
-                    actionButton(
-                        icon: visible ? "eye" : "eye.slash",
-                        label: visible ? "Hide" : "Show",
-                        color: t.accent
-                    ) {
+                HStack(spacing: 16) {
+                    actionButton(icon: visible ? "eye" : "eye.slash", label: visible ? "Hide" : "Show", color: t.secondaryText) {
                         store.toggleStudyVisibility(kind)
                     }
 
-                    actionButton(
-                        icon: "bell.badge",
-                        label: "Create alert",
-                        color: t.accent
-                    ) {
+                    actionButton(icon: "bell.badge", label: "Create alert", color: t.secondaryText) {
                         dismiss()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                             store.alertStudyKind = kind
                         }
                     }
 
-                    actionButton(
-                        icon: "gearshape",
-                        label: "Settings",
-                        color: t.accent
-                    ) {
+                    actionButton(icon: "gearshape", label: "Settings", color: t.accent) {
                         dismiss()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                             store.settingsStudyKind = kind
                         }
                     }
 
-                    actionButton(
-                        icon: "xmark",
-                        label: "Remove",
-                        color: t.accent
-                    ) {
-                        withAnimation(.easeInOut(duration: 0.16)) {
+                    actionButton(icon: "xmark", label: "Remove", color: t.bear.opacity(0.85)) {
+                        withAnimation(.easeInOut(duration: 0.14)) {
                             store.removeStudy(kind)
                         }
                     }
 
                     Spacer()
                 }
-                .padding(.top, 2)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
-        .background(t.cardBg, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(added ? t.accent.opacity(0.32) : t.border, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(t.isDark ? 0.18 : 0.03), radius: 6, y: 2)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .overlay(alignment: .bottom) {
+            if !isLast {
+                Rectangle().fill(t.border).frame(height: 1)
+            }
+        }
     }
 
     private func actionButton(icon: String, label: String, color: Color, action: @escaping () -> Void) -> some View {

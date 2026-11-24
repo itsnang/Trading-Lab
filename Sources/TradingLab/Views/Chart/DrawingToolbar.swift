@@ -6,42 +6,48 @@ struct DrawingToolbar: View {
     var body: some View {
         let t = store.theme
 
-        VStack(spacing: 6) {
+        VStack(spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 4) {
+                VStack(spacing: 3) {
                     ForEach(DrawingTool.allCases) { tool in
                         let selected = store.activeTool == tool
                         Button {
                             store.activeTool = tool
                         } label: {
                             Image(systemName: tool.iconName)
-                                .font(.system(size: 13.5, weight: selected ? .bold : .medium))
-                                .frame(width: 34, height: 32)
-                                .foregroundStyle(selected ? .white : t.secondaryText)
+                                .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
+                                .frame(width: 30, height: 28)
+                                .foregroundStyle(selected ? t.accent : t.secondaryText)
                                 .background(
-                                    selected ? t.accent : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 7)
+                                    selected ? t.accent.opacity(t.isDark ? 0.14 : 0.11) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: t.radiusSharp)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: t.radiusSharp)
+                                        .stroke(selected ? t.accent.opacity(0.45) : Color.clear, lineWidth: 0.75)
                                 )
                         }
                         .buttonStyle(.plain)
                         .help(tool.rawValue)
                     }
 
-                    Divider()
-                        .overlay(t.border)
-                        .padding(.vertical, 4)
+                    railDivider(theme: t)
 
-                    // Magnet Mode (OHLC candle snap — just like TradingView!)
+                    // Magnet Mode (OHLC candle snap)
                     Button {
                         store.magnetEnabled.toggle()
                     } label: {
                         Image(systemName: "magnet")
-                            .font(.system(size: 13.5, weight: store.magnetEnabled ? .bold : .medium))
-                            .frame(width: 34, height: 30)
-                            .foregroundStyle(store.magnetEnabled ? .white : t.secondaryText)
+                            .font(.system(size: 12.5, weight: store.magnetEnabled ? .semibold : .regular))
+                            .frame(width: 30, height: 28)
+                            .foregroundStyle(store.magnetEnabled ? t.accent : t.secondaryText)
                             .background(
-                                store.magnetEnabled ? t.accent : t.softSurface,
-                                in: RoundedRectangle(cornerRadius: 7)
+                                store.magnetEnabled ? t.accent.opacity(0.14) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: t.radiusSharp)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: t.radiusSharp)
+                                    .stroke(store.magnetEnabled ? t.accent.opacity(0.45) : Color.clear, lineWidth: 0.75)
                             )
                     }
                     .buttonStyle(.plain)
@@ -55,10 +61,10 @@ struct DrawingToolbar: View {
                             } label: {
                                 Circle()
                                     .fill(preset.color)
-                                    .frame(width: 13, height: 13)
+                                    .frame(width: 11, height: 11)
                                     .overlay(
                                         Circle()
-                                            .stroke(t.primaryText, lineWidth: selected ? 2 : 0)
+                                            .stroke(t.primaryText, lineWidth: selected ? 1.5 : 0)
                                             .padding(-2.5)
                                     )
                             }
@@ -66,11 +72,9 @@ struct DrawingToolbar: View {
                             .help("Color: \(preset.name)")
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
 
-                    Divider()
-                        .overlay(t.border)
-                        .padding(.vertical, 4)
+                    railDivider(theme: t)
 
                     ToolIconButton(symbol: "plus.magnifyingglass", helpText: "Zoom In", theme: t) {
                         store.zoom(factor: 0.8)
@@ -78,29 +82,34 @@ struct DrawingToolbar: View {
                     ToolIconButton(symbol: "minus.magnifyingglass", helpText: "Zoom Out", theme: t) {
                         store.zoom(factor: 1.25)
                     }
-                    ToolIconButton(symbol: "arrow.counterclockwise", helpText: "Reset Chart View", theme: t) {
+                    ToolIconButton(symbol: "arrow.counterclockwise", helpText: "Reset Chart View (⌥R)", theme: t) {
                         store.resetCamera()
                     }
 
-                    Divider()
-                        .overlay(t.border)
-                        .padding(.vertical, 4)
+                    railDivider(theme: t)
 
-                    ToolIconButton(symbol: "arrow.uturn.backward", helpText: "Undo Last Drawing", theme: t) {
+                    ToolIconButton(symbol: "arrow.uturn.backward", helpText: "Undo Last Drawing (⌘Z)", theme: t) {
                         store.undoDrawing()
                     }
-                    ToolIconButton(symbol: "trash", helpText: "Clear Drawings (\(store.currentDrawings.count))", theme: t, tint: t.bear) {
+                    ToolIconButton(symbol: "trash", helpText: "Clear Drawings (\(store.currentDrawings.count))", theme: t, tint: t.bear.opacity(0.85)) {
                         store.clearDrawings()
                     }
                 }
                 .padding(.vertical, 8)
             }
         }
-        .frame(width: 48)
+        .frame(width: 42)
         .background(t.chromeBg)
         .overlay(alignment: .trailing) {
             Rectangle().fill(t.border).frame(width: 1)
         }
+    }
+
+    private func railDivider(theme t: AppTheme) -> some View {
+        Rectangle()
+            .fill(t.border)
+            .frame(width: 22, height: 1)
+            .padding(.vertical, 5)
     }
 }
 
@@ -111,15 +120,21 @@ private struct ToolIconButton: View {
     var tint: Color? = nil
     let action: () -> Void
 
+    @State private var isHovered = false
+
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 13, weight: .medium))
-                .frame(width: 34, height: 30)
-                .foregroundStyle(tint ?? theme.secondaryText)
-                .background(theme.softSurface, in: RoundedRectangle(cornerRadius: 7))
+                .font(.system(size: 12, weight: .regular))
+                .frame(width: 30, height: 26)
+                .foregroundStyle(tint ?? (isHovered ? theme.primaryText : theme.secondaryText))
+                .background(
+                    isHovered ? theme.softSurface : Color.clear,
+                    in: RoundedRectangle(cornerRadius: theme.radiusSharp)
+                )
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .help(helpText)
     }
 }

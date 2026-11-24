@@ -6,14 +6,14 @@ struct SampleAccountView: View {
     var body: some View {
         let t = store.theme
 
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Paper Trading Account")
+                    Text("Paper Desk Account")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(t.primaryText)
-                    Text("Practice risk sizing and execution on live market feeds with zero real-money risk. Closed trades auto-log to your Journal.")
-                        .font(.system(size: 12.5))
+                    Text("Live-feed execution with automatic SL/TP fills, pending Limit/Stop orders, and instant Journal logging.")
+                        .font(.system(size: 12))
                         .foregroundStyle(t.secondaryText)
                 }
                 Spacer()
@@ -22,134 +22,157 @@ struct SampleAccountView: View {
                         store.closeAllSamplePositions()
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 11.5, weight: .bold))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 7)
-                    .background(t.bear, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6.5)
+                    .background(t.bear, in: RoundedRectangle(cornerRadius: t.radiusControl))
                 }
             }
 
-            HStack(spacing: 14) {
-                kpiCard("BALANCE", String(format: "$%.2f", store.sampleBalance), t.primaryText, theme: t)
-                kpiCard("EQUITY", String(format: "$%.2f", store.sampleEquity), t.accent, theme: t)
-                kpiCard("FLOATING PNL", String(format: "%@$%.2f", store.floatingPnL >= 0 ? "+" : "-", abs(store.floatingPnL)), store.floatingPnL >= 0 ? t.bull : t.bear, theme: t)
-                kpiCard("OPEN POSITIONS", "\(store.samplePositions.count)", t.amber, theme: t)
+            // Unified Hairline-Divided Metric Strip
+            HStack(spacing: 0) {
+                kpiCell("BALANCE", String(format: "$%.2f", store.sampleBalance), t.primaryText, theme: t)
+                Rectangle().fill(t.border).frame(width: 1)
+                kpiCell("EQUITY", String(format: "$%.2f", store.sampleEquity), t.accent, theme: t)
+                Rectangle().fill(t.border).frame(width: 1)
+                kpiCell("FLOATING PNL", String(format: "%@$%.2f", store.floatingPnL >= 0 ? "+" : "-", abs(store.floatingPnL)), store.floatingPnL >= 0 ? t.bull : t.bear, theme: t)
+                Rectangle().fill(t.border).frame(width: 1)
+                kpiCell("OPEN POSITIONS", "\(store.samplePositions.count)", t.primaryText, theme: t)
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusPanel))
+            .overlay(RoundedRectangle(cornerRadius: t.radiusPanel).stroke(t.border, lineWidth: 1))
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text("OPEN POSITIONS")
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(t.secondaryText)
+            // Open Positions Table
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("OPEN POSITIONS (\(store.samplePositions.count))")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .tracking(0.8)
+                        .foregroundStyle(t.secondaryText)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(t.chromeBg)
+                .overlay(alignment: .bottom) { Rectangle().fill(t.border).frame(height: 1) }
 
                 if store.samplePositions.isEmpty {
-                    Text("No open paper positions. Click 'Trade' in the top bar on Terminal to size and place a Buy or Sell order.")
-                        .font(.system(size: 12.5))
+                    Text("No open paper positions. Open the Desk drawer on Terminal to place Market, Limit, or Stop orders.")
+                        .font(.system(size: 12))
                         .foregroundStyle(t.secondaryText)
-                        .padding(.vertical, 24)
+                        .padding(18)
                 } else {
                     ForEach(store.samplePositions) { pos in
                         let refPrice = (pos.instrument == store.instrument) ? store.lastPrice : pos.instrument.basePrice
                         let pnl = pos.floatingPnL(currentPrice: refPrice)
-                        HStack(spacing: 14) {
+                        HStack(spacing: 12) {
                             Text(pos.isBuy ? "BUY" : "SELL")
-                                .font(.system(size: 10.5, weight: .black, design: .monospaced))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3.5)
-                                .background((pos.isBuy ? t.bull : t.bear).opacity(0.16), in: RoundedRectangle(cornerRadius: 5))
+                                .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                                .padding(.horizontal, 6.5)
+                                .padding(.vertical, 3)
+                                .background((pos.isBuy ? t.bull : t.bear).opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
                                 .foregroundStyle(pos.isBuy ? t.bull : t.bear)
 
                             Text(pos.instrument.rawValue)
-                                .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
                                 .foregroundStyle(t.primaryText)
-                                .frame(width: 90, alignment: .leading)
+                                .frame(width: 86, alignment: .leading)
 
                             Text(String(format: "%.2f lots", pos.lots))
-                                .font(.system(size: 12, design: .monospaced))
+                                .font(.system(size: 11.5, design: .monospaced))
                                 .foregroundStyle(t.secondaryText)
 
                             Text("Entry \(pos.instrument.formatPrice(pos.entryPrice))")
-                                .font(.system(size: 12, design: .monospaced))
+                                .font(.system(size: 11.5, design: .monospaced))
                                 .foregroundStyle(t.primaryText)
 
                             if let sl = pos.stopLoss {
                                 Text("SL \(pos.instrument.formatPrice(sl))")
-                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(t.bear)
                             }
                             if let tp = pos.takeProfit {
                                 Text("TP \(pos.instrument.formatPrice(tp))")
-                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(t.bull)
                             }
 
                             Spacer()
 
                             Text(String(format: "%@$%.2f", pnl >= 0 ? "+" : "-", abs(pnl)))
-                                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                .font(.system(size: 12.5, weight: .bold, design: .monospaced))
                                 .foregroundStyle(pnl >= 0 ? t.bull : t.bear)
 
                             Button("50%") {
                                 store.partialClosePaperPosition(id: pos.id, fraction: 0.5)
                             }
                             .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                             .foregroundStyle(t.accent)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(t.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4.5)
+                            .background(t.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: t.radiusSharp))
 
                             Button("BE") {
                                 store.movePaperPositionToBreakeven(id: pos.id)
                             }
                             .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                             .foregroundStyle(t.amber)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(t.amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4.5)
+                            .background(t.amber.opacity(0.12), in: RoundedRectangle(cornerRadius: t.radiusSharp))
 
-                            Button("Close & Log") {
+                            Button("Close") {
                                 store.closeSamplePosition(id: pos.id)
                             }
                             .buttonStyle(.plain)
-                            .font(.system(size: 11.5, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(t.primaryText)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 5)
-                            .background(t.softSurface, in: RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(t.border, lineWidth: 0.8))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4.5)
+                            .background(t.softSurface, in: RoundedRectangle(cornerRadius: t.radiusSharp))
+                            .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(t.border, lineWidth: 0.75))
                         }
-                        .padding(12)
-                        .background(t.softSurface, in: RoundedRectangle(cornerRadius: 9))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .overlay(alignment: .bottom) { Rectangle().fill(t.border.opacity(0.55)).frame(height: 0.5) }
                     }
                 }
             }
-            .padding(18)
-            .background(t.cardBg, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(t.border, lineWidth: 1))
+            .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusPanel))
+            .clipShape(RoundedRectangle(cornerRadius: t.radiusPanel))
+            .overlay(RoundedRectangle(cornerRadius: t.radiusPanel).stroke(t.border, lineWidth: 1))
 
             if !store.paperPendingOrders.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text("PENDING LIMIT / STOP ORDERS (\(store.paperPendingOrders.count))")
-                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .tracking(0.8)
                         .foregroundStyle(t.secondaryText)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(t.chromeBg)
+                        .overlay(alignment: .bottom) { Rectangle().fill(t.border).frame(height: 1) }
 
                     ForEach(store.paperPendingOrders) { ord in
-                        HStack(spacing: 14) {
+                        HStack(spacing: 12) {
                             Text("\(ord.isBuy ? "BUY" : "SELL") \(ord.kind.rawValue.uppercased())")
-                                .font(.system(size: 10.5, weight: .black, design: .monospaced))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3.5)
-                                .background(t.amber.opacity(0.16), in: RoundedRectangle(cornerRadius: 5))
+                                .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                                .padding(.horizontal, 6.5)
+                                .padding(.vertical, 3)
+                                .background(t.amber.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
                                 .foregroundStyle(t.amber)
 
                             Text(ord.instrument.rawValue)
-                                .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
                                 .foregroundStyle(t.primaryText)
 
                             Text(String(format: "%.2f lots @ %@", ord.lots, ord.instrument.formatPrice(ord.entryPrice)))
-                                .font(.system(size: 12, design: .monospaced))
+                                .font(.system(size: 11.5, design: .monospaced))
                                 .foregroundStyle(t.primaryText)
 
                             Spacer()
@@ -158,32 +181,37 @@ struct SampleAccountView: View {
                                 store.cancelPendingOrder(id: ord.id)
                             }
                             .buttonStyle(.plain)
-                            .font(.system(size: 11.5, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(t.bear)
                         }
-                        .padding(10)
-                        .background(t.softSurface, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9.5)
+                        .overlay(alignment: .bottom) { Rectangle().fill(t.border.opacity(0.55)).frame(height: 0.5) }
                     }
                 }
-                .padding(18)
-                .background(t.cardBg, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(t.border, lineWidth: 1))
+                .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusPanel))
+                .clipShape(RoundedRectangle(cornerRadius: t.radiusPanel))
+                .overlay(RoundedRectangle(cornerRadius: t.radiusPanel).stroke(t.border, lineWidth: 1))
             }
 
             Spacer()
         }
-        .padding(22)
+        .padding(20)
         .background(t.canvasBg)
     }
 
-    private func kpiCard(_ title: String, _ value: String, _ tint: Color, theme t: AppTheme) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(t.secondaryText)
-            Text(value).font(.system(size: 20, weight: .bold, design: .monospaced)).foregroundStyle(tint)
+    private func kpiCell(_ title: String, _ value: String, _ tint: Color, theme t: AppTheme) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .tracking(0.8)
+                .foregroundStyle(t.secondaryText)
+            Text(value)
+                .font(.system(size: 18, weight: .bold, design: .monospaced))
+                .foregroundStyle(tint)
         }
-        .padding(15)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(t.cardBg, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(t.border, lineWidth: 1))
     }
 }

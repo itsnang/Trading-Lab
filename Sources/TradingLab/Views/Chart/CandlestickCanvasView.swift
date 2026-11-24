@@ -718,7 +718,7 @@ struct CandlestickCanvasView: View {
             drawCandlesticks(ctx: &layer, candles: candles, plotHeight: plotHeight, range: range, theme: t)
 
             if conceptOn {
-                if cfg.conceptShowEMA20 { drawLineSeries(ctx: &layer, series: store.computed.ema20, color: t.accent, lineWidth: 1.5, plotHeight: plotHeight, range: range) }
+                if cfg.conceptShowEMA20 { drawLineSeries(ctx: &layer, series: store.computed.ema20, color: t.telemetryBlue, lineWidth: 1.5, plotHeight: plotHeight, range: range) }
                 if cfg.conceptShowEMA50 { drawLineSeries(ctx: &layer, series: store.computed.ema50, color: t.amber, lineWidth: 1.5, plotHeight: plotHeight, range: range) }
                 if cfg.conceptShowEMA200 { drawLineSeries(ctx: &layer, series: store.computed.ema200, color: .purple, lineWidth: 1.7, plotHeight: plotHeight, range: range) }
             }
@@ -1400,17 +1400,17 @@ struct CandlestickCanvasView: View {
         if let c = hovered {
             HStack(spacing: 10) {
                 Text("\(store.instrument.rawValue) · \(store.timeframe.rawValue)")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(t.primaryText)
                 ohlcPill("O", store.instrument.formatPrice(c.open), t.primaryText, t.secondaryText)
                 ohlcPill("H", store.instrument.formatPrice(c.high), t.primaryText, t.secondaryText)
                 ohlcPill("L", store.instrument.formatPrice(c.low), t.primaryText, t.secondaryText)
                 ohlcPill("C", store.instrument.formatPrice(c.close), c.isBullish ? t.bull : t.bear, t.secondaryText)
             }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background(t.cardBg.opacity(0.90), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(t.border, lineWidth: 0.8))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(t.cardBg.opacity(0.92), in: RoundedRectangle(cornerRadius: t.radiusControl))
+            .overlay(RoundedRectangle(cornerRadius: t.radiusControl).stroke(t.border, lineWidth: 0.75))
             .allowsHitTesting(false)
         }
     }
@@ -1425,31 +1425,34 @@ struct CandlestickCanvasView: View {
 
     @ViewBuilder
     private func activeStudiesLegend(theme t: AppTheme) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3.5) {
             ForEach(store.activeStudies) { study in
                 HStack(spacing: 8) {
+                    Circle()
+                        .fill(study.isVisible ? t.accent : t.border)
+                        .frame(width: 5.5, height: 5.5)
                     Text(study.kind.title)
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(study.isVisible ? t.primaryText : t.secondaryText)
 
                     HStack(spacing: 6) {
                         Button { store.toggleStudyVisibility(study.kind) } label: {
-                            Image(systemName: study.isVisible ? "eye" : "eye.slash").font(.system(size: 10.5)).foregroundStyle(t.secondaryText)
+                            Image(systemName: study.isVisible ? "eye" : "eye.slash").font(.system(size: 10)).foregroundStyle(t.secondaryText)
                         }.buttonStyle(.plain).help(study.isVisible ? "Hide" : "Show")
 
                         Button { store.settingsStudyKind = study.kind } label: {
-                            Image(systemName: "gearshape").font(.system(size: 10.5)).foregroundStyle(t.secondaryText)
+                            Image(systemName: "gearshape").font(.system(size: 10)).foregroundStyle(t.secondaryText)
                         }.buttonStyle(.plain).help("Settings")
 
                         Button { store.removeStudy(study.kind) } label: {
-                            Image(systemName: "xmark").font(.system(size: 9.5, weight: .bold)).foregroundStyle(t.secondaryText)
+                            Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(t.secondaryText)
                         }.buttonStyle(.plain).help("Remove")
                     }
                 }
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 8.5)
                 .padding(.vertical, 4)
-                .background(t.cardBg.opacity(0.86), in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(t.border, lineWidth: 0.7))
+                .background(t.cardBg.opacity(0.88), in: RoundedRectangle(cornerRadius: t.radiusSharp))
+                .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(t.border, lineWidth: 0.7))
             }
 
             Button {

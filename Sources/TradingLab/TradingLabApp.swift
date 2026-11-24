@@ -101,7 +101,7 @@ final class TradingLabAppDelegate: NSObject, NSApplicationDelegate {
             ActiveStudy(kind: .concept, isVisible: true),
             ActiveStudy(kind: .orderFlow, isVisible: true)
         ]
-        snapshot(IndicatorLibraryView().environmentObject(previewStore), size: CGSize(width: 580, height: 660), file: "indicators-library.png", dark: false)
+        snapshot(IndicatorLibraryView().environmentObject(previewStore), size: CGSize(width: 580, height: 700), file: "indicators-library.png", dark: false)
 
         // 4. Backtest Studio (Light Theme)
         previewStore.activeSection = .backtest
