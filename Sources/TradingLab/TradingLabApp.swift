@@ -58,9 +58,19 @@ final class TradingLabAppDelegate: NSObject, NSApplicationDelegate {
             win.orderOut(nil)
         }
 
-        // Build an isolated preview store (never touches user prefs)
-        let previewStore = WorkspaceStore(ephemeralPreview: true)
-        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        // Fetch real live PAXG/USDT candles on a detached task so MainActor isn't blocked during CLI export
+        var fetchedCandles: [Candle] = []
+        let sem = DispatchSemaphore(value: 0)
+        Task.detached {
+            let svc = LiveMarketService()
+            if let res = try? await svc.fetchHistoricalCandles(instrument: .paxg, timeframe: .m5, limit: 300, endTime: nil) {
+                fetchedCandles = res.candles
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8.0)
+
+        let previewStore = WorkspaceStore(ephemeralPreview: true, initialCandles: fetchedCandles.isEmpty ? nil : fetchedCandles)
 
         // 1. Light Terminal (Market Structure 2.0 + Order Flow + Momentum Oscillator)
         previewStore.isDarkTheme = false
