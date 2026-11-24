@@ -63,6 +63,7 @@ final class FakeMarketDataAdapter: MarketDataAdapter {
     var historicalBatches: [[Candle]] = []
     var shouldFailHistorical: Bool = false
     var tailCandles: [Candle] = []
+    var liveSpotQuote: (price: Double, timestamp: Date)? = nil
     var lastRequestedEndTime: Date?
     var lastRequestedLimit: Int?
     var streamStartCount: Int = 0
@@ -88,6 +89,10 @@ final class FakeMarketDataAdapter: MarketDataAdapter {
 
     func fetchLiveTailCandles(instrument: Instrument, timeframe: Timeframe) async throws -> [Candle] {
         return tailCandles
+    }
+
+    func fetchLiveSpotQuote(instrument: Instrument) async throws -> (price: Double, timestamp: Date)? {
+        return liveSpotQuote
     }
 
     func startBinanceStream(
@@ -462,5 +467,39 @@ final class WorkspaceSeamTests: XCTestCase {
         store.applyLiveSpotTick(price: 3618.1, timestamp: Date(timeIntervalSince1970: t0900 + 1801))
         XCTAssertEqual(store.allCandles.count, 3)
         XCTAssertEqual(store.allCandles[2].timestamp.timeIntervalSince1970, t0900 + 1800, accuracy: 0.1)
+        XCTAssertEqual(store.allCandles[2].open, 3617.9, accuracy: 1e-6)
+    }
+
+    func testXAUUSDAlignsHistoricalFuturesBasisToLiveSpotPriceWithZeroGap() async {
+        let fakeMarket = FakeMarketDataAdapter()
+        let baseTs = 1_795_424_400.0
+        // Historical COMEX Futures (GC=F) candles around 3624.20
+        let gcfCandles = (0..<20).map { i in
+            Candle(
+                id: i,
+                timestamp: Date(timeIntervalSince1970: baseTs + Double(i) * 300),
+                open: 3623.0 + Double(i) * 0.05,
+                high: 3625.0 + Double(i) * 0.05,
+                low: 3622.0 + Double(i) * 0.05,
+                close: 3623.25 + Double(i) * 0.05,
+                volume: 500
+            )
+        }
+        // Last GC=F close = 3623.25 + 19 * 0.05 = 3624.20; Swissquote Spot = 3616.90 (-7.30 basis)
+        fakeMarket.liveSpotQuote = (3616.90, Date(timeIntervalSince1970: baseTs + 20 * 300 + 10))
+
+        let memory = InMemoryPersistenceAdapter()
+        var prefs = WorkspacePrefs()
+        prefs.instrumentRaw = Instrument.xauusd.rawValue
+        prefs.timeframeRaw = Timeframe.m5.rawValue
+        memory.prefs = prefs
+        fakeMarket.historicalBatches = [gcfCandles]
+
+        let store = WorkspaceStore(marketService: fakeMarket, persistence: memory, startTimers: false)
+        store.reloadMarket()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        // Historical candles must be shifted into Spot XAU/USD price space so last close matches Spot seamlessly
+        XCTAssertEqual(store.allCandles.last?.close ?? 0, 3616.90, accuracy: 0.01)
     }
 }

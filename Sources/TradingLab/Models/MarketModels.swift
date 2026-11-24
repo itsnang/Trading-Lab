@@ -38,7 +38,7 @@ enum Instrument: String, CaseIterable, Identifiable, Codable {
     var displayName: String {
         switch self {
         case .paxg: return "Gold 24/7 (PAXG)"
-        case .xauusd: return "Gold Futures / Spot"
+        case .xauusd: return "Spot Gold (Real-Time)"
         case .eurusd: return "Euro / US Dollar"
         case .btcusd: return "Bitcoin"
         case .ethusd: return "Ethereum"
@@ -50,7 +50,7 @@ enum Instrument: String, CaseIterable, Identifiable, Codable {
     /// Binance symbol when supported via free real-time WebSocket + Order Flow tape
     var binanceSymbol: String? {
         switch self {
-        case .paxg: return "PAXGUSDT"
+        case .paxg, .xauusd: return "PAXGUSDT"
         case .btcusd: return "BTCUSDT"
         case .ethusd: return "ETHUSDT"
         default: return nil

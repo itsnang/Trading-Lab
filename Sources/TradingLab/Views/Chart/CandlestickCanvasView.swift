@@ -1105,12 +1105,33 @@ struct CandlestickCanvasView: View {
             ctx.draw(Text(sig.isBullish ? "BUY" : "SELL").font(.system(size: 8.5, weight: .black, design: .monospaced)).foregroundStyle(.white), at: CGPoint(x: pill.midX, y: pill.midY))
         }
         if let latest = store.computed.reversalSignals.last {
-            let xStart = max(0, range.x(forIndex: Double(latest.index)))
-            for (lbl, price, col) in [("SL", latest.stopLoss, t.bear), ("TP1", latest.tp1, t.bull.opacity(0.75)), ("TP2", latest.tp2, t.bull.opacity(0.88)), ("TP3", latest.tp3, t.bull)] {
+            let xStart = max(0, min(plotWidth - 96, range.x(forIndex: Double(latest.index))))
+            let levels: [(String, Double, Color)] = [
+                ("ENTRY", latest.entry, t.accent),
+                ("SL", latest.stopLoss, t.bear),
+                ("TP1", latest.tp1, t.bull.opacity(0.78)),
+                ("TP2", latest.tp2, t.bull.opacity(0.90)),
+                ("TP3", latest.tp3, t.bull)
+            ]
+            for (lbl, price, col) in levels {
                 let y = range.y(forPrice: price, topPadding: topPadding, plotHeight: plotHeight)
-                var lp = Path(); lp.move(to: CGPoint(x: xStart, y: y)); lp.addLine(to: CGPoint(x: plotWidth, y: y))
-                ctx.stroke(lp, with: .color(col), style: StrokeStyle(lineWidth: 1.0, dash: [4, 3]))
-                ctx.draw(Text(lbl).font(.system(size: 8.5, weight: .bold, design: .monospaced)).foregroundStyle(col), at: CGPoint(x: xStart + 16, y: y - 7))
+                guard y >= topPadding - 6 && y <= topPadding + plotHeight + 6 else { continue }
+                var lp = Path()
+                lp.move(to: CGPoint(x: xStart, y: y))
+                lp.addLine(to: CGPoint(x: plotWidth, y: y))
+                ctx.stroke(lp, with: .color(col), style: StrokeStyle(lineWidth: lbl == "ENTRY" ? 1.1 : 1.0, dash: [4, 3]))
+
+                let tagText = "\(lbl) \(store.instrument.formatPrice(price))"
+                let tagWidth = max(78, CGFloat(tagText.count) * 5.8 + 12)
+                let tagX = min(plotWidth - tagWidth - 4, max(xStart + 4, plotWidth - tagWidth - 6))
+                let pillRect = CGRect(x: tagX, y: y - 8, width: tagWidth, height: 16)
+                ctx.fill(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(col.opacity(t.isDark ? 0.88 : 0.94)))
+                ctx.draw(
+                    Text(tagText)
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white),
+                    at: CGPoint(x: pillRect.midX, y: pillRect.midY)
+                )
             }
         }
     }

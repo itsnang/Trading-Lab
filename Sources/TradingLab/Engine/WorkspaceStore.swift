@@ -161,6 +161,7 @@ final class WorkspaceStore: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var backfillTask: Task<Void, Never>?
     private var isBackfillingHistory: Bool = false
+    private var spotBasisOffset: Double = 0.0
     private var reconnectWorkItem: DispatchWorkItem?
     private var reconnectAttempt: Int = 0
     private var wsRotationTimer: Timer?
@@ -427,6 +428,7 @@ final class WorkspaceStore: ObservableObject {
         marketStatus = instrument.marketStatus()
         rightOffsetBars = 6.0
         isAutoPriceScale = true
+        spotBasisOffset = 0.0
 
         let selectedInstrument = instrument
         let selectedTimeframe = timeframe
@@ -445,8 +447,23 @@ final class WorkspaceStore: ObservableObject {
                       self.instrument == selectedInstrument,
                       self.timeframe == selectedTimeframe else { return }
 
-                self.allCandles = res.candles
-                self.replayIndex = max(60, res.candles.count - 55)
+                var loadedCandles = res.candles
+                // For XAU/USD, align 0-delay real-time Gold klines (PAXGUSDT) to institutional
+                // Swissquote Spot XAU/USD at the exact same second so candles match OANDA/Spot
+                // breakouts in real time with zero 10-minute Yahoo Futures lag.
+                if selectedInstrument == .xauusd,
+                   res.provider == "Binance",
+                   let lastClose = loadedCandles.last?.close,
+                   let spotQuote = try? await self.liveService.fetchLiveSpotQuote(instrument: selectedInstrument) {
+                    let basis = spotQuote.price - lastClose
+                    if abs(basis) < lastClose * 0.05 {
+                        self.spotBasisOffset = basis
+                        loadedCandles = Self.shiftCandles(loadedCandles, by: basis)
+                    }
+                }
+
+                self.allCandles = loadedCandles
+                self.replayIndex = max(60, loadedCandles.count - 55)
                 self.recomputeIndicators()
 
                 if let binSym = selectedInstrument.binanceSymbol, res.provider == "Binance" {
@@ -489,11 +506,15 @@ final class WorkspaceStore: ObservableObject {
             guard instrument == targetInstrument,
                   timeframe == targetTimeframe else { return }
 
-            let olderUnique = res.candles
+            var olderUnique = res.candles
                 .filter { $0.timestamp.timeIntervalSince1970 < earliest.timestamp.timeIntervalSince1970 - 0.5 }
                 .sorted { $0.timestamp < $1.timestamp }
 
             guard !olderUnique.isEmpty else { return }
+
+            if spotBasisOffset != 0.0 {
+                olderUnique = Self.shiftCandles(olderUnique, by: spotBasisOffset)
+            }
 
             let prependedCount = olderUnique.count
             let combined = (olderUnique + allCandles).enumerated().map { idx, item in
@@ -569,7 +590,10 @@ final class WorkspaceStore: ObservableObject {
                     limit: 60,
                     endTime: nil
                 ) {
-                    self.mergeTailCandles(gap.candles)
+                    let gapCandles = self.spotBasisOffset != 0.0
+                        ? Self.shiftCandles(gap.candles, by: self.spotBasisOffset)
+                        : gap.candles
+                    self.mergeTailCandles(gapCandles)
                 }
                 self.startLiveBinanceStream(symbol: symbol, interval: interval)
             }
@@ -600,8 +624,27 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    private static func shiftCandles(_ candles: [Candle], by offset: Double) -> [Candle] {
+        guard offset != 0.0 else { return candles }
+        return candles.map { c in
+            Candle(
+                id: c.id,
+                timestamp: c.timestamp,
+                open: c.open + offset,
+                high: c.high + offset,
+                low: c.low + offset,
+                close: c.close + offset,
+                volume: c.volume
+            )
+        }
+    }
+
     func applyLiveSpotTick(price: Double, timestamp: Date) {
         guard price.isFinite, price > 0, !allCandles.isEmpty else { return }
+        if let last = allCandles.last, abs(price - last.close) > last.close * 0.05 {
+            // Reject corrupted outlier tick (>5% single-tick jump)
+            return
+        }
         let bucketSec = timeframe.seconds
         let incomingBucket = floor(timestamp.timeIntervalSince1970 / bucketSec) * bucketSec
         let alignedDate = Date(timeIntervalSince1970: incomingBucket)
@@ -619,12 +662,13 @@ final class WorkspaceStore: ObservableObject {
                     volume: last.volume + 1.0
                 )
             } else if incomingBucket > lastBucket {
+                let openPrice = last.close
                 allCandles.append(Candle(
                     id: last.id + 1,
                     timestamp: alignedDate,
-                    open: price,
-                    high: price,
-                    low: price,
+                    open: openPrice,
+                    high: max(openPrice, price),
+                    low: min(openPrice, price),
                     close: price,
                     volume: 1.0
                 ))
@@ -714,14 +758,18 @@ final class WorkspaceStore: ObservableObject {
 
     private func applyLiveKline(timestamp: Date, open: Double, high: Double, low: Double, close: Double, volume: Double) {
         guard !allCandles.isEmpty else { return }
+        let o = open + spotBasisOffset
+        let h = high + spotBasisOffset
+        let l = low + spotBasisOffset
+        let c = close + spotBasisOffset
         if let last = allCandles.last, abs(last.timestamp.timeIntervalSince(timestamp)) < 1.0 {
             allCandles[allCandles.count - 1] = Candle(
                 id: last.id,
                 timestamp: timestamp,
-                open: open,
-                high: high,
-                low: low,
-                close: close,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
                 volume: volume
             )
         } else if let last = allCandles.last, timestamp > last.timestamp {
@@ -729,10 +777,10 @@ final class WorkspaceStore: ObservableObject {
             allCandles.append(Candle(
                 id: nextId,
                 timestamp: timestamp,
-                open: open,
-                high: high,
-                low: low,
-                close: close,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
                 volume: volume
             ))
             if allCandles.count > 4500 {
@@ -743,12 +791,22 @@ final class WorkspaceStore: ObservableObject {
             }
         }
         recomputeIndicators()
-        evaluateAlerts(currentPrice: close)
-        evaluatePaperDeskExecution(barLow: low, barHigh: high, currentPrice: close)
+        evaluateAlerts(currentPrice: c)
+        evaluatePaperDeskExecution(barLow: l, barHigh: h, currentPrice: c)
     }
 
     private func ingestOrderFlowTrade(_ trade: OrderFlowTrade) {
-        orderFlowTrades.insert(trade, at: 0)
+        let adjusted = spotBasisOffset != 0.0
+            ? OrderFlowTrade(
+                id: trade.id,
+                timestamp: trade.timestamp,
+                price: trade.price + spotBasisOffset,
+                quantity: trade.quantity,
+                usdValue: trade.usdValue,
+                isBuyerAggressor: trade.isBuyerAggressor
+            )
+            : trade
+        orderFlowTrades.insert(adjusted, at: 0)
         if orderFlowTrades.count > 45 {
             orderFlowTrades.removeLast(orderFlowTrades.count - 45)
         }
