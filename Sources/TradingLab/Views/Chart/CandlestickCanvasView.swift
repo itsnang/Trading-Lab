@@ -81,6 +81,8 @@ struct CandlestickCanvasView: View {
 
     @State private var hoverLocation: CGPoint? = nil
     @State private var draftDrawing: DrawingObject? = nil
+    @State private var isAwaitingSecondPoint: Bool = false
+    @State private var hoveredDrawingId: UUID? = nil
     @State private var activeDragZone: ChartDragZone = .none
     @State private var activeEditHandle: DrawingEditHandle = .none
     @State private var lastPanTranslation: CGSize = .zero
@@ -146,9 +148,35 @@ struct CandlestickCanvasView: View {
                     case .active(let pt):
                         hoverLocation = pt
                         updateHoverCursor(pt: pt, plotWidth: plotWidth, plotHeight: plotHeight)
+                        // TradingView click-move-click: smoothly move Point 2 while hovering!
+                        if isAwaitingSecondPoint, var draft = draftDrawing, !draft.tool.isSinglePoint {
+                            let rawEnd = chartPoint(at: pt, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: rangeInfo)
+                            draft.end = applyShiftAngleSnap(start: draft.start, end: rawEnd, tool: draft.tool, plotHeight: plotHeight, range: rangeInfo)
+                            draftDrawing = draft
+                        } else if store.activeTool == .cursor && activeDragZone == .none {
+                            let hit = hitTestDrawing(at: pt, plotWidth: plotWidth, plotHeight: plotHeight, range: rangeInfo)
+                            switch hit {
+                            case .startHandle(let id), .endHandle(let id), .moveBody(let id, _, _):
+                                hoveredDrawingId = id
+                            case .none:
+                                hoveredDrawingId = nil
+                            }
+                        } else {
+                            hoveredDrawingId = nil
+                        }
                     case .ended:
                         hoverLocation = nil
+                        hoveredDrawingId = nil
                         resetHoverCursor()
+                    }
+                }
+                .onChange(of: store.activeTool) { _, newTool in
+                    if newTool == .cursor {
+                        draftDrawing = nil
+                        isAwaitingSecondPoint = false
+                    } else if draftDrawing?.tool != newTool {
+                        draftDrawing = nil
+                        isAwaitingSecondPoint = false
                     }
                 }
                 .onTapGesture(count: 2, coordinateSpace: .local) { location in
@@ -308,12 +336,13 @@ struct CandlestickCanvasView: View {
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
 
-        // Esc -> exit drawing tool / deselect drawing
+        // Esc -> cancel in-progress drawing / exit drawing tool / deselect drawing
         if event.keyCode == 53 {
-            if store.activeTool != .cursor || store.selectedDrawingId != nil {
+            if isAwaitingSecondPoint || draftDrawing != nil || store.activeTool != .cursor || store.selectedDrawingId != nil {
                 store.activeTool = .cursor
                 store.selectedDrawingId = nil
                 draftDrawing = nil
+                isAwaitingSecondPoint = false
                 return true
             }
             return false
@@ -443,11 +472,31 @@ struct CandlestickCanvasView: View {
         return ChartPoint(index: Double(nearestIdx), price: bestPrice)
     }
 
+    private func applyShiftAngleSnap(start: ChartPoint, end: ChartPoint, tool: DrawingTool, plotHeight: CGFloat, range: VisibleRange) -> ChartPoint {
+        guard NSEvent.modifierFlags.contains(.shift),
+              tool == .trendLine || tool == .parallelChannel else {
+            return end
+        }
+        let p1 = CGPoint(x: range.x(forIndex: start.index), y: range.y(forPrice: start.price, topPadding: topPadding, plotHeight: plotHeight))
+        let p2 = CGPoint(x: range.x(forIndex: end.index), y: range.y(forPrice: end.price, topPadding: topPadding, plotHeight: plotHeight))
+        let dx = p2.x - p1.x
+        let dy = p2.y - p1.y
+        let dist = hypot(dx, dy)
+        guard dist > 4 else { return end }
+        let angle = atan2(dy, dx)
+        let snappedAngle = (angle / (.pi / 4.0)).rounded() * (.pi / 4.0)
+        let snappedPt = CGPoint(x: p1.x + cos(snappedAngle) * dist, y: p1.y + sin(snappedAngle) * dist)
+        return ChartPoint(
+            index: range.index(forX: snappedPt.x),
+            price: range.price(forY: snappedPt.y, topPadding: topPadding, plotHeight: plotHeight)
+        )
+    }
+
     // MARK: - Drawing Hit Testing (Select / Move / Resize Handles)
 
     private func hitTestDrawing(at pt: CGPoint, plotWidth: CGFloat, plotHeight: CGFloat, range: VisibleRange) -> DrawingEditHandle {
-        let handleRadius: CGFloat = 11.0
-        let hitTolerance: CGFloat = 9.0
+        let handleRadius: CGFloat = 14.0
+        let hitTolerance: CGFloat = 13.0
 
         // Check in reverse order (topmost drawing first)
         for obj in store.currentDrawings.reversed() {
@@ -579,13 +628,15 @@ struct CandlestickCanvasView: View {
             switch activeEditHandle {
             case .startHandle(let id):
                 if var obj = store.currentDrawings.first(where: { $0.id == id }) {
-                    obj.start = chartPoint(at: value.location, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
+                    let raw = chartPoint(at: value.location, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
+                    obj.start = applyShiftAngleSnap(start: obj.end, end: raw, tool: obj.tool, plotHeight: plotHeight, range: range)
                     store.updateDrawing(obj, persist: false)
                 }
                 return
             case .endHandle(let id):
                 if var obj = store.currentDrawings.first(where: { $0.id == id }) {
-                    obj.end = chartPoint(at: value.location, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
+                    let raw = chartPoint(at: value.location, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
+                    obj.end = applyShiftAngleSnap(start: obj.start, end: raw, tool: obj.tool, plotHeight: plotHeight, range: range)
                     store.updateDrawing(obj, persist: false)
                 }
                 return
@@ -610,21 +661,34 @@ struct CandlestickCanvasView: View {
             }
         }
 
-        // 4. Active Drawing Creation
+        // 4. Active Drawing Creation (Supports BOTH TradingView Click-Move-Click AND Click-Drag!)
         let startPt = chartPoint(at: value.startLocation, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
-        let curPt = chartPoint(at: value.location, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
+        let rawCurPt = chartPoint(at: value.location, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
+
+        if isAwaitingSecondPoint, var draft = draftDrawing {
+            // Second click in Click-Move-Click flow: allow fine adjustment until mouse-up
+            draft.end = applyShiftAngleSnap(start: draft.start, end: rawCurPt, tool: draft.tool, plotHeight: plotHeight, range: range)
+            draftDrawing = draft
+            return
+        }
 
         if draftDrawing == nil {
+            let snappedEnd = store.activeTool.isSinglePoint
+                ? startPt
+                : applyShiftAngleSnap(start: startPt, end: rawCurPt, tool: store.activeTool, plotHeight: plotHeight, range: range)
             draftDrawing = DrawingObject(
                 id: UUID(),
                 tool: store.activeTool,
                 start: startPt,
-                end: store.activeTool.isSinglePoint ? startPt : curPt,
+                end: snappedEnd,
                 colorPresetId: store.activeColorPresetId,
                 label: store.activeTool == .textNote ? store.pendingNoteText : store.activeTool.rawValue
             )
-        } else {
-            draftDrawing?.end = store.activeTool.isSinglePoint ? startPt : curPt
+        } else if var draft = draftDrawing {
+            draft.end = store.activeTool.isSinglePoint
+                ? draft.start
+                : applyShiftAngleSnap(start: draft.start, end: rawCurPt, tool: draft.tool, plotHeight: plotHeight, range: range)
+            draftDrawing = draft
         }
     }
 
@@ -646,10 +710,32 @@ struct CandlestickCanvasView: View {
         }
 
         guard activeDragZone == .plot, store.activeTool != .cursor else { return }
-        if let finalDrawing = draftDrawing {
+        guard let finalDrawing = draftDrawing else { return }
+
+        let dragDist = hypot(value.translation.width, value.translation.height)
+
+        // Single-point tools place immediately on click
+        if finalDrawing.tool.isSinglePoint {
             store.addDrawing(finalDrawing)
+            store.selectedDrawingId = finalDrawing.id
             draftDrawing = nil
-            store.activeTool = .cursor // Automatically return to Crosshair after placing (just like TradingView default!)
+            isAwaitingSecondPoint = false
+            store.activeTool = .cursor
+            return
+        }
+
+        // Two-point tools:
+        // - If we were already waiting for Point 2 -> commit on this 2nd click!
+        // - If user clicked & released (< 6pt drag) for Point 1 -> enter TradingView Click-Move-Click mode!
+        // - If user clicked & dragged (>= 6pt) -> commit cleanly right away!
+        if isAwaitingSecondPoint || dragDist >= 6.0 {
+            store.addDrawing(finalDrawing)
+            store.selectedDrawingId = finalDrawing.id
+            draftDrawing = nil
+            isAwaitingSecondPoint = false
+            store.activeTool = .cursor
+        } else {
+            isAwaitingSecondPoint = true
         }
     }
 
@@ -743,10 +829,19 @@ struct CandlestickCanvasView: View {
 
             for d in store.currentDrawings {
                 let isSelected = (d.id == store.selectedDrawingId)
-                drawUserObject(ctx: &layer, obj: d, plotWidth: plotWidth, plotHeight: plotHeight, range: range, isDraft: false, isSelected: isSelected, theme: t)
+                let isHovered = (d.id == hoveredDrawingId)
+                drawUserObject(ctx: &layer, obj: d, plotWidth: plotWidth, plotHeight: plotHeight, range: range, isDraft: false, isSelected: isSelected || isHovered, theme: t)
             }
             if let draft = draftDrawing {
                 drawUserObject(ctx: &layer, obj: draft, plotWidth: plotWidth, plotHeight: plotHeight, range: range, isDraft: true, isSelected: true, theme: t)
+            } else if store.activeTool != .cursor, let pt = hoverLocation, pt.x >= 0, pt.x <= plotWidth, pt.y >= topPadding, pt.y <= topPadding + plotHeight {
+                // Live pre-placement snap dot (shows exact candle OHLC snap when Magnet is ON)
+                let snapped = chartPoint(at: pt, plotWidth: plotWidth, plotHeight: plotHeight, candles: candles, range: range)
+                let sx = range.x(forIndex: snapped.index)
+                let sy = range.y(forPrice: snapped.price, topPadding: topPadding, plotHeight: plotHeight)
+                let ring = CGRect(x: sx - 5.5, y: sy - 5.5, width: 11, height: 11)
+                layer.fill(Path(ellipseIn: ring), with: .color(t.accent.opacity(0.28)))
+                layer.stroke(Path(ellipseIn: ring), with: .color(t.accent), lineWidth: 1.6)
             }
 
             if let last = candles.last {
@@ -1251,6 +1346,19 @@ struct CandlestickCanvasView: View {
         case .trendLine:
             var path = Path(); path.move(to: p1); path.addLine(to: p2)
             ctx.stroke(path, with: .color(col), style: strokeStyle)
+            if isDraft || isSelected {
+                let diff = obj.end.price - obj.start.price
+                let pips = diff / store.instrument.pipSize
+                let bars = abs(Int(round(obj.end.index - obj.start.index)))
+                if hypot(p2.x - p1.x, p2.y - p1.y) > 12 {
+                    let readout = String(format: "%+.1fp · %db", pips, bars)
+                    let pillW = max(72, CGFloat(readout.count) * 5.6 + 10)
+                    let pill = CGRect(x: min(plotWidth - pillW - 4, p2.x + 8), y: max(topPadding + 4, p2.y - 18), width: pillW, height: 16)
+                    ctx.fill(Path(roundedRect: pill, cornerRadius: 4), with: .color(t.cardBg.opacity(0.92)))
+                    ctx.stroke(Path(roundedRect: pill, cornerRadius: 4), with: .color(col.opacity(0.65)), lineWidth: 0.8)
+                    ctx.draw(Text(readout).font(.system(size: 8.5, weight: .bold, design: .monospaced)).foregroundStyle(t.primaryText), at: CGPoint(x: pill.midX, y: pill.midY))
+                }
+            }
         case .horizontalLine:
             var path = Path(); path.move(to: CGPoint(x: 0, y: p1.y)); path.addLine(to: CGPoint(x: plotWidth, y: p1.y))
             ctx.stroke(path, with: .color(col), style: strokeStyle)
@@ -1474,26 +1582,34 @@ struct CandlestickCanvasView: View {
     }
 
     private func activeDrawingHint(theme t: AppTheme) -> some View {
-        HStack(spacing: 8) {
+        let hintText: String = {
+            if store.activeTool.isSinglePoint {
+                return "\(store.activeTool.rawValue): Click chart to place (Esc to cancel)"
+            }
+            if isAwaitingSecondPoint {
+                return "\(store.activeTool.rawValue): Move & click Point 2 · Hold ⇧ for 0°/45° (Esc cancel)"
+            }
+            return "\(store.activeTool.rawValue): Click Point 1 & Point 2, or drag · Hold ⇧ to snap"
+        }()
+        return HStack(spacing: 8) {
             Image(systemName: store.activeTool.iconName).font(.system(size: 11, weight: .bold))
-            Text(store.activeTool.isSinglePoint
-                 ? "\(store.activeTool.rawValue): Click chart to place (Esc to cancel)"
-                 : "\(store.activeTool.rawValue): Click & drag on chart (Esc to cancel)")
-                .font(.system(size: 11.5, weight: .semibold))
+            Text(hintText)
+                .font(.system(size: 11, weight: .semibold))
             Button("Done") {
                 store.activeTool = .cursor
                 draftDrawing = nil
+                isAwaitingSecondPoint = false
             }
             .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .bold))
+            .font(.system(size: 10.5, weight: .bold))
             .padding(.horizontal, 7)
             .padding(.vertical, 2.5)
-            .background(Color.white.opacity(0.22), in: Capsule())
+            .background(Color.white.opacity(0.22), in: RoundedRectangle(cornerRadius: 4))
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(t.accent, in: Capsule())
+        .foregroundStyle(t.isDark ? .black : .white)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 5.5)
+        .background(t.accent, in: RoundedRectangle(cornerRadius: t.radiusControl))
     }
 
     private func sidewayDashboardCard(theme t: AppTheme) -> some View {
