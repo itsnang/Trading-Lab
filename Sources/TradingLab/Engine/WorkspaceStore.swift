@@ -23,6 +23,44 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
     }
 }
 
+enum RightDockTab: String, CaseIterable, Identifiable, Codable {
+    case watchlist = "Watchlist"
+    case orderTicket = "Order Ticket"
+    case orderFlow = "Order Flow"
+    case alerts = "Alerts"
+    case drawings = "Drawings"
+
+    var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .watchlist: return "list.bullet.rectangle"
+        case .orderTicket: return "bolt.fill"
+        case .orderFlow: return "chart.bar.xaxis"
+        case .alerts: return "bell.badge"
+        case .drawings: return "pencil.and.outline"
+        }
+    }
+}
+
+enum BottomTrayTab: String, CaseIterable, Identifiable, Codable {
+    case tradingPanel = "Trading Panel"
+    case strategyTester = "Strategy Tester"
+    case journal = "Journal"
+    case botStudio = "Bot Studio"
+
+    var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .tradingPanel: return "briefcase"
+        case .strategyTester: return "waveform.path.ecg"
+        case .journal: return "book.pages"
+        case .botStudio: return "cpu"
+        }
+    }
+}
+
 @MainActor
 final class WorkspaceStore: ObservableObject {
     @Published var isDarkTheme: Bool = false {
@@ -69,9 +107,23 @@ final class WorkspaceStore: ObservableObject {
     @Published var oscillatorHeight: CGFloat = 155.0 {
         didSet { saveWorkspacePrefs() }
     }
-    @Published var tradeDrawerWidth: CGFloat = 304.0 {
+    @Published var tradeDrawerWidth: CGFloat = 286.0 {
         didSet { saveWorkspacePrefs() }
     }
+    @Published var bottomTrayHeight: CGFloat = 250.0 {
+        didSet { saveWorkspacePrefs() }
+    }
+    @Published var isBottomTrayMaximized: Bool = false
+    @Published var activeRightDockTab: RightDockTab? = .watchlist {
+        didSet {
+            showTradeDrawer = (activeRightDockTab != nil)
+            saveWorkspacePrefs()
+        }
+    }
+    @Published var activeBottomTrayTab: BottomTrayTab? = nil {
+        didSet { saveWorkspacePrefs() }
+    }
+    @Published var watchlistQuotes: [Instrument: LiveTickerQuote] = [:]
 
     // Clean Bundled Indicator Suites (inspired by BTrader study cards)
     @Published var activeStudies: [ActiveStudy] = [
@@ -182,6 +234,7 @@ final class WorkspaceStore: ObservableObject {
     private var reconnectAttempt: Int = 0
     private var wsRotationTimer: Timer?
     private var pollTimer: Timer?
+    private var watchlistTimer: Timer?
     private var replayTimer: Timer?
     private var isBootstrapping = true
     private let isEphemeralPreview: Bool
@@ -321,6 +374,10 @@ final class WorkspaceStore: ObservableObject {
             self.zoneTouchAlertsEnabled = prefs.zoneTouchAlertsEnabled
             self.macOSNotificationsEnabled = prefs.macOSNotificationsEnabled
             self.soundAlertsEnabled = prefs.soundAlertsEnabled
+            self.activeRightDockTab = prefs.activeRightDockTabRaw.flatMap(RightDockTab.init(rawValue:))
+            self.activeBottomTrayTab = prefs.activeBottomTrayTabRaw.flatMap(BottomTrayTab.init(rawValue:))
+            self.bottomTrayHeight = CGFloat(max(150.0, min(560.0, prefs.bottomTrayHeight)))
+            self.showTradeDrawer = (self.activeRightDockTab != nil)
         }
         self.isBootstrapping = false
         if startTimers {
@@ -334,6 +391,7 @@ final class WorkspaceStore: ObservableObject {
             }
             reloadMarket()
             startCountdownTimer()
+            startWatchlistTimer()
         }
     }
 
@@ -341,8 +399,48 @@ final class WorkspaceStore: ObservableObject {
         loadTask?.cancel()
         liveService.disconnectStream()
         pollTimer?.invalidate()
+        watchlistTimer?.invalidate()
         replayTimer?.invalidate()
         countdownTimer?.invalidate()
+    }
+
+    func toggleRightDockTab(_ tab: RightDockTab) {
+        if activeRightDockTab == tab {
+            activeRightDockTab = nil
+        } else {
+            activeRightDockTab = tab
+        }
+    }
+
+    func toggleBottomTrayTab(_ tab: BottomTrayTab) {
+        if activeBottomTrayTab == tab {
+            activeBottomTrayTab = nil
+            isBottomTrayMaximized = false
+        } else {
+            activeBottomTrayTab = tab
+        }
+    }
+
+    func refreshWatchlistQuotes() async {
+        let fetched = await liveService.fetchWatchlistQuotes()
+        for (inst, quote) in fetched {
+            watchlistQuotes[inst] = quote
+        }
+        if !allCandles.isEmpty {
+            watchlistQuotes[instrument] = LiveTickerQuote(price: lastPrice, changePercent: priceChangePercent)
+        }
+    }
+
+    private func startWatchlistTimer() {
+        watchlistTimer?.invalidate()
+        Task { @MainActor [weak self] in
+            await self?.refreshWatchlistQuotes()
+        }
+        watchlistTimer = Timer.scheduledTimer(withTimeInterval: 12.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.refreshWatchlistQuotes()
+            }
+        }
     }
 
     private func startCountdownTimer() {
@@ -398,7 +496,10 @@ final class WorkspaceStore: ObservableObject {
             signalAlertsEnabled: signalAlertsEnabled,
             zoneTouchAlertsEnabled: zoneTouchAlertsEnabled,
             macOSNotificationsEnabled: macOSNotificationsEnabled,
-            soundAlertsEnabled: soundAlertsEnabled
+            soundAlertsEnabled: soundAlertsEnabled,
+            activeRightDockTabRaw: activeRightDockTab?.rawValue,
+            activeBottomTrayTabRaw: activeBottomTrayTab?.rawValue,
+            bottomTrayHeight: Double(bottomTrayHeight)
         ))
     }
 
@@ -698,7 +799,7 @@ final class WorkspaceStore: ObservableObject {
         let pip = max(instrument.pipSize, 1e-6)
         orderStopPips = max(1.0, (abs(entry - sl) / pip).rounded())
         orderTakeProfitPips = max(1.0, (abs(tp - entry) / pip).rounded())
-        showTradeDrawer = true
+        activeRightDockTab = .orderTicket
     }
 
     // MARK: - Market Loading (LIVE + SAMPLE)
@@ -760,6 +861,7 @@ final class WorkspaceStore: ObservableObject {
                 self.allCandles = loadedCandles
                 self.replayIndex = max(60, loadedCandles.count - 55)
                 self.recomputeIndicators()
+                self.watchlistQuotes[selectedInstrument] = LiveTickerQuote(price: self.lastPrice, changePercent: self.priceChangePercent)
                 self.seedSignalAlertBaseline()
 
                 if let binSym = selectedInstrument.binanceSymbol, res.provider == "Binance" {
@@ -975,6 +1077,7 @@ final class WorkspaceStore: ObservableObject {
 
         if let latest = allCandles.last {
             recomputeIndicators()
+            watchlistQuotes[instrument] = LiveTickerQuote(price: price, changePercent: priceChangePercent)
             evaluateAlerts(currentPrice: price)
             evaluateStudySignalAlerts(currentPrice: price)
             evaluatePaperDeskExecution(barLow: latest.low, barHigh: latest.high, currentPrice: price)
@@ -1091,6 +1194,7 @@ final class WorkspaceStore: ObservableObject {
             }
         }
         recomputeIndicators()
+        watchlistQuotes[instrument] = LiveTickerQuote(price: c, changePercent: priceChangePercent)
         evaluateAlerts(currentPrice: c)
         evaluateStudySignalAlerts(currentPrice: c)
         evaluatePaperDeskExecution(barLow: l, barHigh: h, currentPrice: c)

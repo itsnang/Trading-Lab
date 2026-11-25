@@ -43,8 +43,13 @@ struct WindowChromeBar: View {
                     }
                 }
                 .padding(.leading, 14)
-                .padding(.trailing, 4)
+                .padding(.trailing, 2)
                 .onHover { isHoveringControls = $0 }
+
+                // Subtle MSNR Emblem (replaces bulky left nav sidebar)
+                MSNRLogoMark(isDark: t.isDark, showSacredGrid: false)
+                    .frame(width: 18, height: 18)
+                    .padding(.leading, 4)
 
                 toolbarDivider(theme: t)
 
@@ -172,34 +177,32 @@ struct WindowChromeBar: View {
                 // Live Feed Status
                 feedStatusPill(theme: t)
 
-                // Execution & Alerts Drawer Toggle
-                if store.activeSection == .terminal {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.14)) {
-                            store.showTradeDrawer.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "sidebar.right")
-                                .font(.system(size: 11.5, weight: .semibold))
-                            Text("Desk")
-                                .font(.system(size: 11.5, weight: .semibold))
-                        }
-                        .foregroundStyle(store.showTradeDrawer ? (t.isDark ? .black : .white) : t.primaryText)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(
-                            store.showTradeDrawer ? t.accent : t.softSurface.opacity(0.6),
-                            in: RoundedRectangle(cornerRadius: t.radiusControl)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: t.radiusControl)
-                                .stroke(store.showTradeDrawer ? Color.clear : t.border, lineWidth: 0.75)
-                        )
+                // Quick Order Ticket Toggle
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        store.toggleRightDockTab(.orderTicket)
                     }
-                    .buttonStyle(.plain)
-                    .help("Toggle Paper Desk Order Ticket, Order Flow Tape & Signal Alerts")
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text("Trade")
+                            .font(.system(size: 11.5, weight: .semibold))
+                    }
+                    .foregroundStyle(store.activeRightDockTab == .orderTicket ? (t.isDark ? .black : .white) : t.primaryText)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        store.activeRightDockTab == .orderTicket ? t.accent : t.softSurface.opacity(0.6),
+                        in: RoundedRectangle(cornerRadius: t.radiusControl)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: t.radiusControl)
+                            .stroke(store.activeRightDockTab == .orderTicket ? Color.clear : t.border, lineWidth: 0.75)
+                    )
                 }
+                .buttonStyle(.plain)
+                .help("Toggle Paper Desk Order Ticket")
 
                 // Light / Dark Mode Switch
                 Button {

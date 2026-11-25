@@ -47,6 +47,11 @@ struct WorkspacePrefs: Codable {
     var macOSNotificationsEnabled: Bool = true
     var soundAlertsEnabled: Bool = true
 
+    // TradingView-Style Dock & Bottom Tray Layout
+    var activeRightDockTabRaw: String? = RightDockTab.watchlist.rawValue
+    var activeBottomTrayTabRaw: String? = nil
+    var bottomTrayHeight: Double = 250.0
+
     init() {}
 
     init(
@@ -72,7 +77,10 @@ struct WorkspacePrefs: Codable {
         signalAlertsEnabled: Bool = true,
         zoneTouchAlertsEnabled: Bool = true,
         macOSNotificationsEnabled: Bool = true,
-        soundAlertsEnabled: Bool = true
+        soundAlertsEnabled: Bool = true,
+        activeRightDockTabRaw: String? = RightDockTab.watchlist.rawValue,
+        activeBottomTrayTabRaw: String? = nil,
+        bottomTrayHeight: Double = 250.0
     ) {
         self.isDarkTheme = isDarkTheme
         self.activeStudies = activeStudies
@@ -97,6 +105,9 @@ struct WorkspacePrefs: Codable {
         self.zoneTouchAlertsEnabled = zoneTouchAlertsEnabled
         self.macOSNotificationsEnabled = macOSNotificationsEnabled
         self.soundAlertsEnabled = soundAlertsEnabled
+        self.activeRightDockTabRaw = activeRightDockTabRaw
+        self.activeBottomTrayTabRaw = activeBottomTrayTabRaw
+        self.bottomTrayHeight = bottomTrayHeight
     }
 
     /// Backwards-compatible decoding so new settings never wipe your saved preferences.
@@ -126,6 +137,11 @@ struct WorkspacePrefs: Codable {
         zoneTouchAlertsEnabled = try c.decodeIfPresent(Bool.self, forKey: .zoneTouchAlertsEnabled) ?? d.zoneTouchAlertsEnabled
         macOSNotificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .macOSNotificationsEnabled) ?? d.macOSNotificationsEnabled
         soundAlertsEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundAlertsEnabled) ?? d.soundAlertsEnabled
+        activeRightDockTabRaw = c.contains(.activeRightDockTabRaw)
+            ? try c.decodeIfPresent(String.self, forKey: .activeRightDockTabRaw)
+            : d.activeRightDockTabRaw
+        activeBottomTrayTabRaw = try c.decodeIfPresent(String.self, forKey: .activeBottomTrayTabRaw)
+        bottomTrayHeight = try c.decodeIfPresent(Double.self, forKey: .bottomTrayHeight) ?? d.bottomTrayHeight
     }
 }
 

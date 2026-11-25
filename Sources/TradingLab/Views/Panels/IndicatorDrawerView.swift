@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Docked, hairline-divided Execution Desk, Order Flow Tape & Signal Alerts panel.
+/// TradingView-style focused Right Dock Panel (Watchlist, Order Ticket, Order Flow, Alerts, or Drawings).
 private enum TicketOrderMode: String, CaseIterable, Identifiable {
     case market = "MARKET"
     case limit = "LIMIT"
@@ -12,215 +12,496 @@ struct IndicatorDrawerView: View {
     @EnvironmentObject var store: WorkspaceStore
     @State private var orderMode: TicketOrderMode = .market
     @State private var pendingEntryPrice: Double = 0
+    @State private var watchlistFilter: String = ""
 
     var body: some View {
         let t = store.theme
+        let activeTab = store.activeRightDockTab ?? .watchlist
 
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                // 1. Paper Desk Order Ticket
-                dockedSection(title: "PAPER DESK · ORDER TICKET", theme: t) {
-                    VStack(spacing: 10) {
-                        // Sharp custom mode tabs
-                        HStack(spacing: 2) {
-                            ForEach(TicketOrderMode.allCases) { mode in
-                                let active = orderMode == mode
-                                Button {
-                                    orderMode = mode
-                                    if mode != .market && pendingEntryPrice <= 0 {
-                                        pendingEntryPrice = store.lastPrice
-                                    }
-                                } label: {
-                                    Text(mode.rawValue)
-                                        .font(.system(size: 10, weight: active ? .bold : .medium, design: .monospaced))
-                                        .tracking(0.6)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 5.5)
-                                        .foregroundStyle(active ? (t.isDark ? .black : .white) : t.secondaryText)
-                                        .background(
-                                            active ? t.accent : Color.clear,
-                                            in: RoundedRectangle(cornerRadius: t.radiusSharp)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(2)
-                        .background(t.softSurface, in: RoundedRectangle(cornerRadius: t.radiusControl))
-
-                        if orderMode != .market {
-                            numberField("PENDING ENTRY PRICE", value: $pendingEntryPrice, theme: t)
-                        }
-
-                        HStack {
-                            Toggle("Auto Risk Sizing", isOn: $store.autoSizeByRisk)
-                                .toggleStyle(.switch)
-                                .controlSize(.mini)
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(t.primaryText)
-                            Spacer()
-                            Text(String(format: "%.2f lots", store.effectiveOrderLots))
-                                .font(.system(size: 11.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(t.accent)
-                        }
-
-                        HStack(spacing: 6) {
-                            if store.autoSizeByRisk {
-                                numberField("RISK %", value: $store.riskPercentPerTrade, theme: t)
-                            } else {
-                                numberField("LOTS", value: $store.orderLots, theme: t)
-                            }
-                            numberField("SL (PIPS)", value: $store.orderStopPips, theme: t)
-                            numberField("TP (PIPS)", value: $store.orderTakeProfitPips, theme: t)
-                        }
-
-                        let rr = store.orderStopPips > 0 ? (store.orderTakeProfitPips / store.orderStopPips) : 0
-                        let riskUSD = store.orderStopPips * store.effectiveOrderLots * store.instrument.dollarPerPipPerLot
-                        HStack {
-                            Text(String(format: "RISK $%.0f", riskUSD)).foregroundStyle(t.amber)
-                            Spacer()
-                            Text(String(format: "R:R 1:%.1f", rr)).foregroundStyle(rr >= 2.0 ? t.bull : t.secondaryText)
-                        }
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .tracking(0.4)
-
-                        HStack(spacing: 6) {
-                            orderActionButton(isBuy: false, color: t.bear, theme: t)
-                            orderActionButton(isBuy: true, color: t.bull, theme: t)
-                        }
+        VStack(spacing: 0) {
+            // Focused Panel Header (TradingView style)
+            HStack {
+                Text(activeTab.rawValue.uppercased())
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .tracking(1.0)
+                    .foregroundStyle(t.primaryText)
+                Spacer()
+                if activeTab == .watchlist {
+                    Button {
+                        Task { await store.refreshWatchlistQuotes() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(t.secondaryText)
                     }
+                    .buttonStyle(.plain)
+                    .help("Refresh Watchlist Quotes")
                 }
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        store.activeRightDockTab = nil
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(t.secondaryText)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("Collapse Panel")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(t.chromeBg)
+            .overlay(alignment: .bottom) { Rectangle().fill(t.border).frame(height: 1) }
 
-                // 2. Live Order Flow Pressure & Tape
-                dockedSection(title: "ORDER FLOW TAPE", theme: t) {
-                    VStack(spacing: 8) {
-                        let buyPct = store.buyPressurePercent
-                        HStack {
-                            Text(String(format: "BID %.0f%%", buyPct)).foregroundStyle(t.bull)
-                            Spacer()
-                            Text(String(format: "ASK %.0f%%", 100.0 - buyPct)).foregroundStyle(t.bear)
-                        }
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .tracking(0.5)
+            // Focused Tab Content
+            ScrollView(.vertical, showsIndicators: false) {
+                switch activeTab {
+                case .watchlist:
+                    watchlistContent(theme: t)
+                case .orderTicket:
+                    orderTicketContent(theme: t)
+                case .orderFlow:
+                    orderFlowContent(theme: t)
+                case .alerts:
+                    alertsContent(theme: t)
+                case .drawings:
+                    drawingsContent(theme: t)
+                }
+            }
+        }
+        .frame(width: store.tradeDrawerWidth)
+        .background(t.chromeBg)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(t.border).frame(width: 1)
+        }
+    }
 
-                        GeometryReader { g in
-                            HStack(spacing: 1) {
-                                Rectangle().fill(t.bull).frame(width: g.size.width * CGFloat(buyPct / 100.0))
-                                Rectangle().fill(t.bear)
+    // MARK: - 1. Live Watchlist (TradingView Style)
+
+    @ViewBuilder
+    private func watchlistContent(theme t: AppTheme) -> some View {
+        let query = watchlistFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = Instrument.allCases.filter {
+            query.isEmpty || $0.rawValue.lowercased().contains(query) || $0.displayName.lowercased().contains(query)
+        }
+
+        VStack(alignment: .leading, spacing: 0) {
+            // Quick Filter Bar
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(t.secondaryText)
+                TextField("Filter symbol...", text: $watchlistFilter)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(t.primaryText)
+                if !watchlistFilter.isEmpty {
+                    Button { watchlistFilter = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(t.secondaryText)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusSharp))
+            .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(t.border, lineWidth: 0.75))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+
+            // Column Header
+            HStack {
+                Text("SYMBOL")
+                Spacer()
+                Text("LAST")
+                    .frame(width: 74, alignment: .trailing)
+                Text("CHG%")
+                    .frame(width: 56, alignment: .trailing)
+            }
+            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+            .tracking(0.7)
+            .foregroundStyle(t.secondaryText)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+            .overlay(alignment: .bottom) { Rectangle().fill(t.border).frame(height: 1) }
+
+            // Watchlist Rows
+            ForEach(filtered) { inst in
+                let isSelected = (inst == store.instrument)
+                let quote = store.watchlistQuotes[inst]
+                let priceVal = isSelected ? store.lastPrice : (quote?.price ?? inst.basePrice)
+                let pctVal = isSelected ? store.priceChangePercent : (quote?.changePercent ?? 0.0)
+                let hasLive = isSelected || quote != nil
+
+                Button {
+                    store.instrument = inst
+                } label: {
+                    HStack(spacing: 6) {
+                        Rectangle()
+                            .fill(isSelected ? t.accent : Color.clear)
+                            .frame(width: 2.5, height: 28)
+
+                        VStack(alignment: .leading, spacing: 1.5) {
+                            HStack(spacing: 4) {
+                                Text(inst.rawValue)
+                                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(isSelected ? t.accent : t.primaryText)
+                                if inst.binanceSymbol != nil {
+                                    Circle().fill(t.bull).frame(width: 4.5, height: 4.5)
+                                }
                             }
-                            .clipShape(RoundedRectangle(cornerRadius: 2))
-                        }
-                        .frame(height: 4)
-
-                        if store.orderFlowTrades.isEmpty {
-                            Text(store.instrument.binanceSymbol == nil
-                                 ? "Live trade tape streams on XAU/USD, PAXG/USDT, BTC/USD & ETH/USD."
-                                 : "Waiting for incoming trades...")
-                                .font(.system(size: 11))
+                            Text(inst.displayName)
+                                .font(.system(size: 9.5))
                                 .foregroundStyle(t.secondaryText)
-                        } else {
-                            VStack(spacing: 3) {
-                                ForEach(store.orderFlowTrades.prefix(10)) { tr in
-                                    HStack {
-                                        Text(tr.isBuyerAggressor ? "▲" : "▼")
-                                            .font(.system(size: 8.5, weight: .bold))
-                                            .foregroundStyle(tr.isBuyerAggressor ? t.bull : t.bear)
-                                        Text(store.instrument.formatPrice(tr.price))
-                                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                            .foregroundStyle(tr.isBuyerAggressor ? t.bull : t.bear)
-                                        Spacer()
-                                        Text(formatUSD(tr.usdValue))
-                                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                            .foregroundStyle(tr.usdValue >= 10_000 ? t.amber : t.secondaryText)
-                                    }
-                                    .padding(.vertical, 1)
-                                }
-                            }
+                                .lineLimit(1)
                         }
+
+                        Spacer()
+
+                        Text(hasLive ? inst.formatPrice(priceVal) : "—")
+                            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(t.primaryText)
+                            .frame(width: 74, alignment: .trailing)
+
+                        Text(hasLive ? String(format: "%+.2f%%", pctVal) : "—")
+                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(pctVal >= 0 ? t.bull : t.bear)
+                            .frame(width: 56, alignment: .trailing)
                     }
+                    .padding(.trailing, 12)
+                    .padding(.vertical, 7)
+                    .background(isSelected ? t.accent.opacity(t.isDark ? 0.11 : 0.08) : Color.clear)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .overlay(alignment: .bottom) { Rectangle().fill(t.border.opacity(0.45)).frame(height: 0.5) }
+            }
+
+            // Active Symbol Telemetry Summary (TradingView bottom Details card)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("SYMBOL DETAILS · \(store.instrument.rawValue)")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundStyle(t.secondaryText)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.instrument.formatPrice(store.lastPrice))
+                            .font(.system(size: 20, weight: .bold, design: .monospaced))
+                            .foregroundStyle(t.primaryText)
+                        Text(store.marketStatus.isOpen ? "\(store.marketStatus.sessionLabel) · Open" : "Closed · \(store.marketStatus.detailText)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(store.marketStatus.isOpen ? t.bull : t.bear)
+                    }
+                    Spacer()
+                    let pct = store.priceChangePercent
+                    Text(String(format: "%+.2f%%", pct))
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundStyle(pct >= 0 ? t.bull : t.bear)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background((pct >= 0 ? t.bull : t.bear).opacity(0.14), in: RoundedRectangle(cornerRadius: t.radiusSharp))
                 }
 
-                // 3. Auto Signal Alerts & Price Alerts
-                dockedSection(title: "SIGNAL & PRICE ALERTS (\(store.alerts.count + store.recentSignalAlerts.count))", theme: t) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Toggle("Confirmed Study Signals", isOn: $store.signalAlertsEnabled)
-                            .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            .font(.system(size: 11, weight: .medium))
-                        Toggle("Early OB / FVG Zone Touch", isOn: $store.zoneTouchAlertsEnabled)
-                            .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            .font(.system(size: 11, weight: .medium))
-                        HStack(spacing: 12) {
-                            Toggle("macOS Banner", isOn: $store.macOSNotificationsEnabled)
-                                .toggleStyle(.switch)
-                                .controlSize(.mini)
-                                .font(.system(size: 10.5, weight: .medium))
-                            Toggle("Sound", isOn: $store.soundAlertsEnabled)
-                                .toggleStyle(.switch)
-                                .controlSize(.mini)
-                                .font(.system(size: 10.5, weight: .medium))
-                        }
+                HStack(spacing: 0) {
+                    detailMetric("ATR", store.instrument.formatPrice(store.computed.lastATR), theme: t)
+                    detailMetric("ADX", String(format: "%.1f", store.computed.lastADX), theme: t)
+                    detailMetric("RSI", String(format: "%.1f", store.computed.lastRSI), theme: t)
+                }
+                .padding(.vertical, 6)
+                .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusSharp))
+                .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(t.border, lineWidth: 0.75))
 
-                        Rectangle().fill(t.border).frame(height: 1).padding(.vertical, 2)
+                // Quick 1-click Trade trigger
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        store.activeRightDockTab = .orderTicket
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10.5))
+                        Text("Open Order Ticket")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(t.accent, in: RoundedRectangle(cornerRadius: t.radiusSharp))
+                    .foregroundStyle(t.isDark ? .black : .white)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(12)
+        }
+    }
 
-                        Button {
-                            store.alertStudyKind = .concept
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 10, weight: .bold))
-                                Text("Add Price Level Alert")
-                                    .font(.system(size: 11, weight: .semibold))
+    private func detailMetric(_ label: String, _ val: String, theme t: AppTheme) -> some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(t.secondaryText)
+            Text(val)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(t.primaryText)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - 2. Paper Desk Order Ticket
+
+    @ViewBuilder
+    private func orderTicketContent(theme t: AppTheme) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            dockedSection(title: "\(store.instrument.rawValue) · PAPER EXECUTION", theme: t) {
+                VStack(spacing: 10) {
+                    HStack(spacing: 2) {
+                        ForEach(TicketOrderMode.allCases) { mode in
+                            let active = orderMode == mode
+                            Button {
+                                orderMode = mode
+                                if mode != .market && pendingEntryPrice <= 0 {
+                                    pendingEntryPrice = store.lastPrice
+                                }
+                            } label: {
+                                Text(mode.rawValue)
+                                    .font(.system(size: 10, weight: active ? .bold : .medium, design: .monospaced))
+                                    .tracking(0.6)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 5.5)
+                                    .foregroundStyle(active ? (t.isDark ? .black : .white) : t.secondaryText)
+                                    .background(
+                                        active ? t.accent : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: t.radiusSharp)
+                                    )
                             }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(2)
+                    .background(t.softSurface, in: RoundedRectangle(cornerRadius: t.radiusControl))
+
+                    if orderMode != .market {
+                        numberField("PENDING ENTRY PRICE", value: $pendingEntryPrice, theme: t)
+                    }
+
+                    HStack {
+                        Toggle("Auto Risk Sizing", isOn: $store.autoSizeByRisk)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(t.primaryText)
+                        Spacer()
+                        Text(String(format: "%.2f lots", store.effectiveOrderLots))
+                            .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(t.accent)
+                    }
+
+                    HStack(spacing: 6) {
+                        if store.autoSizeByRisk {
+                            numberField("RISK %", value: $store.riskPercentPerTrade, theme: t)
+                        } else {
+                            numberField("LOTS", value: $store.orderLots, theme: t)
+                        }
+                        numberField("SL (PIPS)", value: $store.orderStopPips, theme: t)
+                        numberField("TP (PIPS)", value: $store.orderTakeProfitPips, theme: t)
+                    }
+
+                    let rr = store.orderStopPips > 0 ? (store.orderTakeProfitPips / store.orderStopPips) : 0
+                    let riskUSD = store.orderStopPips * store.effectiveOrderLots * store.instrument.dollarPerPipPerLot
+                    HStack {
+                        Text(String(format: "RISK $%.0f", riskUSD)).foregroundStyle(t.amber)
+                        Spacer()
+                        Text(String(format: "R:R 1:%.1f", rr)).foregroundStyle(rr >= 2.0 ? t.bull : t.secondaryText)
+                    }
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+
+                    HStack(spacing: 6) {
+                        orderActionButton(isBuy: false, color: t.bear, theme: t)
+                        orderActionButton(isBuy: true, color: t.bull, theme: t)
+                    }
+                }
+            }
+
+            // Compact Account Summary
+            dockedSection(title: "ACCOUNT SUMMARY", showBottomDivider: false, theme: t) {
+                VStack(spacing: 6) {
+                    summaryRow("Balance", String(format: "$%.2f", store.sampleBalance), t.primaryText, theme: t)
+                    summaryRow("Equity", String(format: "$%.2f", store.sampleEquity), t.accent, theme: t)
+                    summaryRow("Floating PnL", String(format: "%@$%.2f", store.floatingPnL >= 0 ? "+" : "-", abs(store.floatingPnL)), store.floatingPnL >= 0 ? t.bull : t.bear, theme: t)
+                    summaryRow("Open / Pending", "\(store.samplePositions.count) / \(store.paperPendingOrders.count)", t.secondaryText, theme: t)
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.14)) {
+                            store.activeBottomTrayTab = .tradingPanel
+                        }
+                    } label: {
+                        Text("Manage Positions in Bottom Panel")
+                            .font(.system(size: 10.5, weight: .semibold))
                             .foregroundStyle(t.accent)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
                             .background(t.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: t.radiusSharp))
-                            .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(t.accent.opacity(0.28), lineWidth: 0.75))
-                        }
-                        .buttonStyle(.plain)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                }
+            }
+        }
+    }
 
-                        if !store.recentSignalAlerts.isEmpty {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("RECENT SIGNALS")
-                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    .tracking(0.8)
-                                    .foregroundStyle(t.secondaryText)
-                                    .padding(.top, 2)
-                                ForEach(store.recentSignalAlerts.prefix(4)) { ev in
-                                    HStack(spacing: 6) {
-                                        Rectangle()
-                                            .fill(ev.category == "Zone Touch" ? t.amber : (ev.isBullish ? t.bull : t.bear))
-                                            .frame(width: 2.5, height: 24)
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(ev.title)
-                                                .font(.system(size: 10.5, weight: .semibold))
-                                                .foregroundStyle(t.primaryText)
-                                                .lineLimit(1)
-                                            Text(ev.body)
-                                                .font(.system(size: 9.5, design: .monospaced))
-                                                .foregroundStyle(t.secondaryText)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        if ev.suggestedSL != nil && ev.suggestedTP != nil {
-                                            Button("USE") {
-                                                store.applySignalTargetsToOrderTicket(ev)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                            .foregroundStyle(t.accent)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 3)
-                                            .background(t.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
-                                        }
+    private func summaryRow(_ k: String, _ v: String, _ vc: Color, theme t: AppTheme) -> some View {
+        HStack {
+            Text(k).font(.system(size: 11)).foregroundStyle(t.secondaryText)
+            Spacer()
+            Text(v).font(.system(size: 11.5, weight: .bold, design: .monospaced)).foregroundStyle(vc)
+        }
+    }
+
+    // MARK: - 3. Live Order Flow Tape
+
+    @ViewBuilder
+    private func orderFlowContent(theme t: AppTheme) -> some View {
+        dockedSection(title: "LIVE DELTA & TRADE TAPE", showBottomDivider: false, theme: t) {
+            VStack(spacing: 9) {
+                let buyPct = store.buyPressurePercent
+                HStack {
+                    Text(String(format: "BID %.0f%%", buyPct)).foregroundStyle(t.bull)
+                    Spacer()
+                    Text(String(format: "ASK %.0f%%", 100.0 - buyPct)).foregroundStyle(t.bear)
+                }
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+
+                GeometryReader { g in
+                    HStack(spacing: 1) {
+                        Rectangle().fill(t.bull).frame(width: g.size.width * CGFloat(buyPct / 100.0))
+                        Rectangle().fill(t.bear)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                }
+                .frame(height: 5)
+
+                if store.orderFlowTrades.isEmpty {
+                    Text(store.instrument.binanceSymbol == nil
+                         ? "Live trade tape streams on XAU/USD, PAXG/USDT, BTC/USD & ETH/USD."
+                         : "Waiting for incoming trades...")
+                        .font(.system(size: 11))
+                        .foregroundStyle(t.secondaryText)
+                        .padding(.top, 6)
+                } else {
+                    VStack(spacing: 3.5) {
+                        ForEach(store.orderFlowTrades.prefix(24)) { tr in
+                            HStack {
+                                Text(tr.isBuyerAggressor ? "▲" : "▼")
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .foregroundStyle(tr.isBuyerAggressor ? t.bull : t.bear)
+                                Text(store.instrument.formatPrice(tr.price))
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(tr.isBuyerAggressor ? t.bull : t.bear)
+                                Spacer()
+                                Text(formatUSD(tr.usdValue))
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(tr.usdValue >= 10_000 ? t.amber : t.secondaryText)
+                            }
+                            .padding(.vertical, 1.5)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - 4. Signal & Price Alerts
+
+    @ViewBuilder
+    private func alertsContent(theme t: AppTheme) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            dockedSection(title: "AUTO SIGNAL & NOTIFICATION SETTINGS", theme: t) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Toggle("Confirmed Study Signals", isOn: $store.signalAlertsEnabled)
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .font(.system(size: 11, weight: .medium))
+                    Toggle("Early OB / FVG Zone Touch", isOn: $store.zoneTouchAlertsEnabled)
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .font(.system(size: 11, weight: .medium))
+                    HStack(spacing: 12) {
+                        Toggle("macOS Banner", isOn: $store.macOSNotificationsEnabled)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(.system(size: 10.5, weight: .medium))
+                        Toggle("Sound", isOn: $store.soundAlertsEnabled)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+
+                    Button {
+                        store.alertStudyKind = .concept
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                            Text("Add Price Level Alert").font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundStyle(t.accent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6.5)
+                        .background(t.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: t.radiusSharp))
+                        .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(t.accent.opacity(0.28), lineWidth: 0.75))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 3)
+                }
+            }
+
+            if !store.recentSignalAlerts.isEmpty {
+                dockedSection(title: "RECENT STUDY SIGNALS (\(store.recentSignalAlerts.count))", theme: t) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(store.recentSignalAlerts.prefix(10)) { ev in
+                            HStack(spacing: 6) {
+                                Rectangle()
+                                    .fill(ev.category == "Zone Touch" ? t.amber : (ev.isBullish ? t.bull : t.bear))
+                                    .frame(width: 2.5, height: 26)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(ev.title)
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .foregroundStyle(t.primaryText)
+                                        .lineLimit(1)
+                                    Text(ev.body)
+                                        .font(.system(size: 9.5, design: .monospaced))
+                                        .foregroundStyle(t.secondaryText)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                if ev.suggestedSL != nil && ev.suggestedTP != nil {
+                                    Button("USE") {
+                                        store.applySignalTargetsToOrderTicket(ev)
                                     }
+                                    .buttonStyle(.plain)
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(t.accent)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(t.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
                                 }
                             }
                         }
+                    }
+                }
+            }
 
-                        ForEach(store.alerts.prefix(6)) { al in
+            dockedSection(title: "MANUAL PRICE ALERTS (\(store.alerts.count))", showBottomDivider: false, theme: t) {
+                if store.alerts.isEmpty {
+                    Text("Right-click anywhere on the chart or click Add Price Level Alert above.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(t.secondaryText)
+                } else {
+                    VStack(spacing: 7) {
+                        ForEach(store.alerts) { al in
                             HStack(spacing: 6) {
                                 Image(systemName: al.isTriggered ? "checkmark.circle.fill" : "bell")
                                     .font(.system(size: 10.5))
@@ -247,46 +528,63 @@ struct IndicatorDrawerView: View {
                         }
                     }
                 }
+            }
+        }
+    }
 
-                // 4. Saved Drawings
-                dockedSection(title: "SAVED DRAWINGS (\(store.currentDrawings.count))", showBottomDivider: false, theme: t) {
-                    if store.currentDrawings.isEmpty {
-                        Text("Select a drawing tool on the left rail and drag on the chart. All levels save automatically.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(t.secondaryText)
-                    } else {
-                        VStack(spacing: 5) {
-                            ForEach(store.currentDrawings) { d in
-                                HStack(spacing: 6) {
-                                    Circle().fill(d.color).frame(width: 7, height: 7)
-                                    Text(d.tool.rawValue)
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(t.primaryText)
-                                    Spacer()
-                                    Text(store.instrument.formatPrice(d.start.price))
-                                        .font(.system(size: 10.5, design: .monospaced))
-                                        .foregroundStyle(t.secondaryText)
-                                    Button {
-                                        store.removeDrawing(id: d.id)
-                                    } label: {
-                                        Image(systemName: "xmark")
-                                            .font(.system(size: 9, weight: .bold))
-                                            .foregroundStyle(t.secondaryText)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
+    // MARK: - 5. Drawings Object Tree
+
+    @ViewBuilder
+    private func drawingsContent(theme t: AppTheme) -> some View {
+        dockedSection(title: "OBJECT TREE · \(store.instrument.rawValue) (\(store.currentDrawings.count))", showBottomDivider: false, theme: t) {
+            if store.currentDrawings.isEmpty {
+                Text("Select any drawing tool on the left rail (or press ⌥T / ⌥H / ⌥F) and drag on the chart.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(t.secondaryText)
+            } else {
+                VStack(spacing: 4) {
+                    ForEach(store.currentDrawings) { d in
+                        let selected = store.selectedDrawingId == d.id
+                        HStack(spacing: 7) {
+                            Circle().fill(d.color).frame(width: 7, height: 7)
+                            Text(d.tool.rawValue)
+                                .font(.system(size: 11, weight: selected ? .bold : .medium))
+                                .foregroundStyle(selected ? t.accent : t.primaryText)
+                            Spacer()
+                            Text(store.instrument.formatPrice(d.start.price))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(t.secondaryText)
+                            Button {
+                                store.removeDrawing(id: d.id)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(t.secondaryText)
                             }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(selected ? t.accent.opacity(0.11) : t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusSharp))
+                        .overlay(RoundedRectangle(cornerRadius: t.radiusSharp).stroke(selected ? t.accent.opacity(0.4) : t.border, lineWidth: 0.75))
+                        .onTapGesture {
+                            store.selectedDrawingId = d.id
                         }
                     }
+
+                    Button("Clear All Drawings") {
+                        store.clearDrawings()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(t.bear)
+                    .padding(.top, 8)
                 }
             }
         }
-        .frame(width: store.tradeDrawerWidth)
-        .background(t.chromeBg)
-        .overlay(alignment: .leading) {
-            Rectangle().fill(t.border).frame(width: 1)
-        }
     }
+
+    // MARK: - Helpers
 
     private func orderActionButton(isBuy: Bool, color: Color, theme t: AppTheme) -> some View {
         let side = isBuy ? "BUY" : "SELL"
@@ -329,13 +627,13 @@ struct IndicatorDrawerView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(title)
-                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
                 .tracking(0.9)
                 .foregroundStyle(t.secondaryText)
             content()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 13)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .bottom) {
             if showBottomDivider {

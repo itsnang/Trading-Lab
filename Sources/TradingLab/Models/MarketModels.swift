@@ -16,6 +16,11 @@ struct Candle: Identifiable, Hashable {
     var hlc3: Double { (high + low + close) / 3.0 }
 }
 
+struct LiveTickerQuote: Equatable {
+    let price: Double
+    let changePercent: Double
+}
+
 enum LiveFeedState: Equatable {
     case idle
     case connecting(String)

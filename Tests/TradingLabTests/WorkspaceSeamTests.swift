@@ -79,6 +79,7 @@ final class FakeMarketDataAdapter: MarketDataAdapter {
     var shouldFailHistorical: Bool = false
     var tailCandles: [Candle] = []
     var liveSpotQuote: (price: Double, timestamp: Date)? = nil
+    var watchlistQuotesToReturn: [Instrument: LiveTickerQuote] = [:]
     var lastRequestedEndTime: Date?
     var lastRequestedLimit: Int?
     var streamStartCount: Int = 0
@@ -108,6 +109,10 @@ final class FakeMarketDataAdapter: MarketDataAdapter {
 
     func fetchLiveSpotQuote(instrument: Instrument) async throws -> (price: Double, timestamp: Date)? {
         return liveSpotQuote
+    }
+
+    func fetchWatchlistQuotes() async -> [Instrument: LiveTickerQuote] {
+        return watchlistQuotesToReturn
     }
 
     func startBinanceStream(
@@ -611,5 +616,38 @@ final class WorkspaceSeamTests: XCTestCase {
         store.evaluateStudySignalAlerts(currentPrice: 2632.0)
         XCTAssertEqual(fakeNotif.delivered.count, 2)
         XCTAssertTrue(fakeNotif.delivered[1].title.contains("Order Block"))
+    }
+
+    func testTradingViewDockAndBottomTrayTogglePersistAndPopulateWatchlist() async {
+        let fakeMarket = FakeMarketDataAdapter()
+        fakeMarket.watchlistQuotesToReturn = [
+            .xauusd: LiveTickerQuote(price: 3632.50, changePercent: 1.12),
+            .btcusd: LiveTickerQuote(price: 94210.0, changePercent: -0.45)
+        ]
+        let memory = InMemoryPersistenceAdapter()
+        let store = WorkspaceStore(marketService: fakeMarket, persistence: memory, startTimers: false)
+
+        // Default right dock is Watchlist; toggling same tab collapses to nil (full-width chart)
+        XCTAssertEqual(store.activeRightDockTab, .watchlist)
+        store.toggleRightDockTab(.watchlist)
+        XCTAssertNil(store.activeRightDockTab)
+        XCTAssertFalse(store.showTradeDrawer)
+
+        // Switching to Order Ticket opens drawer & persists
+        store.toggleRightDockTab(.orderTicket)
+        XCTAssertEqual(store.activeRightDockTab, .orderTicket)
+        XCTAssertEqual(memory.prefs?.activeRightDockTabRaw, RightDockTab.orderTicket.rawValue)
+
+        // Bottom tray opens and collapses cleanly
+        XCTAssertNil(store.activeBottomTrayTab)
+        store.toggleBottomTrayTab(.tradingPanel)
+        XCTAssertEqual(store.activeBottomTrayTab, .tradingPanel)
+        store.toggleBottomTrayTab(.tradingPanel)
+        XCTAssertNil(store.activeBottomTrayTab)
+
+        // Watchlist refresh populates live ticker quotes
+        await store.refreshWatchlistQuotes()
+        XCTAssertEqual(store.watchlistQuotes[.xauusd]?.price ?? 0, 3632.50, accuracy: 0.01)
+        XCTAssertEqual(store.watchlistQuotes[.btcusd]?.changePercent ?? 0, -0.45, accuracy: 0.01)
     }
 }

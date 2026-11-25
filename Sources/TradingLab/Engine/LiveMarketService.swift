@@ -90,6 +90,40 @@ final class LiveMarketService: MarketDataAdapter {
         return (mid, Date(timeIntervalSince1970: tsMs / 1000.0))
     }
 
+    /// Lightweight batch quote fetch for the TradingView-style Watchlist (Binance 24h tickers + Swissquote Spot).
+    func fetchWatchlistQuotes() async -> [Instrument: LiveTickerQuote] {
+        var quotes: [Instrument: LiveTickerQuote] = [:]
+
+        // 1. Batch Binance 24h ticker for PAXG, BTC, ETH (1 single lightweight HTTP call)
+        if let url = URL(string: "https://data-api.binance.vision/api/v3/ticker/24hr?symbols=%5B%22PAXGUSDT%22,%22BTCUSDT%22,%22ETHUSDT%22%5D"),
+           let (data, resp) = try? await session.data(from: url),
+           let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+           let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            for row in rows {
+                guard let sym = row["symbol"] as? String,
+                      let last = doubleFromAny(row["lastPrice"] as Any),
+                      let pct = doubleFromAny(row["priceChangePercent"] as Any) else { continue }
+                switch sym {
+                case "PAXGUSDT": quotes[.paxg] = LiveTickerQuote(price: last, changePercent: pct)
+                case "BTCUSDT":  quotes[.btcusd] = LiveTickerQuote(price: last, changePercent: pct)
+                case "ETHUSDT":  quotes[.ethusd] = LiveTickerQuote(price: last, changePercent: pct)
+                default: break
+                }
+            }
+        }
+
+        // 2. Real-time Swissquote Spot quotes for XAU/USD and EUR/USD
+        if let xau = try? await fetchLiveSpotQuote(instrument: .xauusd) {
+            let paxgPct = quotes[.paxg]?.changePercent ?? 0.0
+            quotes[.xauusd] = LiveTickerQuote(price: xau.price, changePercent: paxgPct)
+        }
+        if let eur = try? await fetchLiveSpotQuote(instrument: .eurusd) {
+            quotes[.eurusd] = LiveTickerQuote(price: eur.price, changePercent: 0.0)
+        }
+
+        return quotes
+    }
+
     private func fetchBinanceKlines(symbol: String, interval: String, limit: Int, endTime: Date? = nil) async throws -> [Candle] {
         let hosts = ["https://data-api.binance.vision", "https://api.binance.com"]
         var lastError: Error = URLError(.cannotConnectToHost)

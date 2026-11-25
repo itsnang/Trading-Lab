@@ -13,26 +13,47 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 WindowChromeBar()
 
+                // TradingView-Style Edge-to-Edge Shell:
+                // [42pt Drawing Rail] | [Chart + Optional Oscillator + Collapsible Bottom Tray] | [Optional Focused Right Panel] | [40pt Right Icon Dock]
                 HStack(spacing: 0) {
-                    WorkspaceSidebar()
+                    DrawingToolbar()
 
-                    switch store.activeSection {
-                    case .terminal:
-                        terminalWorkspace(theme: t)
-                    case .backtest:
-                        BacktestView()
-                    case .journal:
-                        JournalView()
-                    case .botStudio:
-                        BotStudioView()
-                    case .account:
-                        SampleAccountView()
+                    VStack(spacing: 0) {
+                        if !store.isBottomTrayMaximized || store.activeBottomTrayTab == nil {
+                            ZStack(alignment: .bottom) {
+                                VStack(spacing: 0) {
+                                    CandlestickCanvasView()
+
+                                    if store.isStudyVisible(.momentumOscillator) {
+                                        horizontalPaneSplitter(theme: t)
+                                        OscillatorPaneView()
+                                    }
+                                }
+
+                                if store.isReplayMode {
+                                    ChartReplayBar()
+                                        .padding(.bottom, 12)
+                                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+
+                        BottomTrayView()
                     }
+
+                    if store.activeRightDockTab != nil {
+                        verticalDrawerSplitter(theme: t)
+                        IndicatorDrawerView()
+                            .transition(.move(edge: .trailing))
+                    }
+
+                    RightIconDock()
                 }
             }
             .background(t.canvasBg)
 
-            // Triggered Price Alert Banner
+            // Triggered Price / Study Signal Alert Toast
             if let alert = store.triggeredAlertBanner {
                 HStack(spacing: 10) {
                     Image(systemName: "bell.badge.fill")
@@ -54,7 +75,7 @@ struct ContentView: View {
                 .padding(.vertical, 10)
                 .background(t.accent, in: Capsule())
                 .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
-                .padding(.top, 56)
+                .padding(.top, 52)
                 .transition(.move(edge: .top).combined(with: .opacity))
             } else if let sig = store.triggeredSignalBanner {
                 HStack(spacing: 10) {
@@ -95,7 +116,7 @@ struct ContentView: View {
                 .padding(.vertical, 9)
                 .background(sig.category == "Zone Touch" ? t.amber : (sig.isBullish ? t.bull : t.bear), in: Capsule())
                 .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
-                .padding(.top, 56)
+                .padding(.top, 52)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -114,37 +135,6 @@ struct ContentView: View {
         }
     }
 
-    private func terminalWorkspace(theme t: AppTheme) -> some View {
-        HStack(spacing: 0) {
-            DrawingToolbar()
-
-            ZStack(alignment: .bottom) {
-                VStack(spacing: 0) {
-                    CandlestickCanvasView()
-
-                    if store.isStudyVisible(.momentumOscillator) {
-                        // Draggable horizontal pane divider (TradingView style)
-                        horizontalPaneSplitter(theme: t)
-                        OscillatorPaneView()
-                    }
-                }
-
-                if store.isReplayMode {
-                    ChartReplayBar()
-                        .padding(.bottom, 16)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-
-            if store.showTradeDrawer {
-                // Draggable vertical drawer divider
-                verticalDrawerSplitter(theme: t)
-                IndicatorDrawerView()
-                    .transition(.move(edge: .trailing))
-            }
-        }
-    }
-
     private func horizontalPaneSplitter(theme t: AppTheme) -> some View {
         ZStack {
             Rectangle().fill(t.border).frame(height: 1)
@@ -160,11 +150,13 @@ struct ContentView: View {
             if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
         }
         .gesture(
-            DragGesture(minimumDistance: 0)
+            DragGesture(minimumDistance: 1)
                 .onChanged { value in
-                    if dragStartOscHeight == nil { dragStartOscHeight = store.oscillatorHeight }
+                    if dragStartOscHeight == nil {
+                        dragStartOscHeight = store.oscillatorHeight
+                    }
                     let base = dragStartOscHeight ?? store.oscillatorHeight
-                    store.oscillatorHeight = max(72, min(420, base - value.translation.height))
+                    store.oscillatorHeight = max(72.0, min(420.0, base - value.translation.height))
                 }
                 .onEnded { _ in
                     dragStartOscHeight = nil
@@ -177,9 +169,9 @@ struct ContentView: View {
             Rectangle().fill(t.border).frame(width: 1)
             Capsule()
                 .fill(t.secondaryText.opacity(0.35))
-                .frame(width: 3, height: 32)
+                .frame(width: 3, height: 36)
         }
-        .frame(width: 7)
+        .frame(width: 6)
         .frame(maxHeight: .infinity)
         .background(t.canvasBg)
         .contentShape(Rectangle())
@@ -187,11 +179,13 @@ struct ContentView: View {
             if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
         }
         .gesture(
-            DragGesture(minimumDistance: 0)
+            DragGesture(minimumDistance: 1)
                 .onChanged { value in
-                    if dragStartDrawerWidth == nil { dragStartDrawerWidth = store.tradeDrawerWidth }
+                    if dragStartDrawerWidth == nil {
+                        dragStartDrawerWidth = store.tradeDrawerWidth
+                    }
                     let base = dragStartDrawerWidth ?? store.tradeDrawerWidth
-                    store.tradeDrawerWidth = max(240, min(460, base - value.translation.width))
+                    store.tradeDrawerWidth = max(230.0, min(460.0, base - value.translation.width))
                 }
                 .onEnded { _ in
                     dragStartDrawerWidth = nil

@@ -58,24 +58,28 @@ final class TradingLabAppDelegate: NSObject, NSApplicationDelegate {
             win.orderOut(nil)
         }
 
-        // Fetch real live PAXG/USDT candles on a detached task so MainActor isn't blocked during CLI export
+        // Fetch real live PAXG/USDT candles + live Watchlist quotes on a detached task
         var fetchedCandles: [Candle] = []
+        var fetchedWatchlist: [Instrument: LiveTickerQuote] = [:]
         let sem = DispatchSemaphore(value: 0)
         Task.detached {
             let svc = LiveMarketService()
             if let res = try? await svc.fetchHistoricalCandles(instrument: .paxg, timeframe: .m5, limit: 300, endTime: nil) {
                 fetchedCandles = res.candles
             }
+            fetchedWatchlist = await svc.fetchWatchlistQuotes()
             sem.signal()
         }
         _ = sem.wait(timeout: .now() + 8.0)
 
         let previewStore = WorkspaceStore(ephemeralPreview: true, initialCandles: fetchedCandles.isEmpty ? nil : fetchedCandles)
+        previewStore.watchlistQuotes = fetchedWatchlist
 
-        // 1. Light Terminal (Market Structure 2.0 + Order Flow + Momentum Oscillator)
+        // 1. Light Terminal (TradingView layout: Edge-to-Edge Chart + Live Watchlist Right Dock + Sleek Bottom Bar)
         previewStore.isDarkTheme = false
-        previewStore.activeSection = .terminal
-        previewStore.showTradeDrawer = true
+        previewStore.activeRightDockTab = .watchlist
+        previewStore.activeBottomTrayTab = nil
+        previewStore.isBottomTrayMaximized = false
         previewStore.activeStudies = [
             ActiveStudy(kind: .concept, isVisible: true),
             ActiveStudy(kind: .orderFlow, isVisible: true),
@@ -84,9 +88,10 @@ final class TradingLabAppDelegate: NSObject, NSApplicationDelegate {
         previewStore.recomputeIndicators()
         snapshot(ContentView().environmentObject(previewStore), size: CGSize(width: 1440, height: 900), file: "terminal-light.png", dark: false)
 
-        // 2. Dark Terminal (Reversal & ATR Targets + Sideway Detector + Momentum Oscillator)
+        // 2. Dark Terminal (Full-Width Chart + Reversal & ATR Targets + Sideway Detector)
         previewStore.isDarkTheme = true
-        previewStore.showTradeDrawer = false
+        previewStore.activeRightDockTab = nil
+        previewStore.activeBottomTrayTab = nil
         previewStore.activeStudies = [
             ActiveStudy(kind: .reversalTargets, isVisible: true),
             ActiveStudy(kind: .sidewayDetector, isVisible: true),
@@ -103,8 +108,10 @@ final class TradingLabAppDelegate: NSObject, NSApplicationDelegate {
         ]
         snapshot(IndicatorLibraryView().environmentObject(previewStore), size: CGSize(width: 580, height: 700), file: "indicators-library.png", dark: false)
 
-        // 4. Backtest Studio (Light Theme)
-        previewStore.activeSection = .backtest
+        // 4. Strategy Tester in Maximized Bottom Tray (Light Theme)
+        previewStore.activeRightDockTab = nil
+        previewStore.activeBottomTrayTab = .strategyTester
+        previewStore.isBottomTrayMaximized = true
         snapshot(ContentView().environmentObject(previewStore), size: CGSize(width: 1440, height: 900), file: "backtest-studio.png", dark: false)
     }
 

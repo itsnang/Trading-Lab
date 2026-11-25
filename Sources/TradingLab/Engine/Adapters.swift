@@ -54,6 +54,8 @@ protocol MarketDataAdapter: AnyObject {
         instrument: Instrument
     ) async throws -> (price: Double, timestamp: Date)?
 
+    func fetchWatchlistQuotes() async -> [Instrument: LiveTickerQuote]
+
     func startBinanceStream(
         symbol: String,
         interval: String,
@@ -68,6 +70,10 @@ protocol MarketDataAdapter: AnyObject {
 extension MarketDataAdapter {
     func fetchLiveSpotQuote(instrument: Instrument) async throws -> (price: Double, timestamp: Date)? {
         nil
+    }
+
+    func fetchWatchlistQuotes() async -> [Instrument: LiveTickerQuote] {
+        [:]
     }
 }
 

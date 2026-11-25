@@ -205,7 +205,7 @@ struct BacktestView: View {
                     }
                 }
             }
-            .frame(maxHeight: .infinity)
+            .frame(maxHeight: .infinity, alignment: .top)
             .background(t.cardBg, in: RoundedRectangle(cornerRadius: t.radiusPanel))
             .clipShape(RoundedRectangle(cornerRadius: t.radiusPanel))
             .overlay(RoundedRectangle(cornerRadius: t.radiusPanel).stroke(t.border, lineWidth: 1))
